@@ -9,13 +9,18 @@ import {
   UserRole,
 } from "~/db/schema";
 import {
+  archiveNotification,
   countUnseenNotifications,
+  listArchivedNotifications,
   listNotifications,
+  markAllNotificationsRead,
   markNotificationRead,
+  markNotificationUnread,
   markNotificationsSeen,
   notifyRefundRequestDecided,
   notifyRefundRequestRaised,
   openNotification,
+  unarchiveNotification,
 } from "./notifications.server";
 
 type TestDb = ReturnType<typeof createTestDb>;
@@ -405,5 +410,151 @@ describe("the bell", () => {
       readAt: null,
     });
     expect(countUnseenNotifications(db, pat.id)).toBe(1);
+  });
+});
+
+describe("managing Notifications", () => {
+  let pat: typeof schema.users.$inferSelect;
+
+  beforeEach(() => {
+    pat = addPerson("Pat", UserRole.Admin);
+  });
+
+  function buyerNamesIn(list: { sentence: schema.SentenceSegment[] }[]) {
+    return list.map((notification) => notification.sentence[0].text);
+  }
+
+  function raiseFrom(name: string, at = NOW) {
+    raiseOn(buyForSelf(addPerson(name, UserRole.Student).id).id, at);
+  }
+
+  function idOf(buyerName: string, userId = pat.id) {
+    const notification = listNotifications(db, userId).find(
+      (n) => n.sentence[0].text === buyerName
+    );
+    if (!notification) throw new Error(`No Notification about ${buyerName}`);
+    return notification.id;
+  }
+
+  it("marking a Read Notification unread puts it back with the unread group", () => {
+    raiseFrom("Ana", minutesAfterNow(1));
+    raiseFrom("Ben", minutesAfterNow(2));
+    markNotificationRead(db, pat.id, idOf("Ben"), NOW);
+    markNotificationRead(db, pat.id, idOf("Ana"), NOW);
+
+    expect(markNotificationUnread(db, pat.id, idOf("Ana"))).toBe(true);
+
+    const listed = listNotifications(db, pat.id);
+    expect(buyerNamesIn(listed)).toEqual(["Ana", "Ben"]);
+    expect(listed.map((n) => n.readAt)).toEqual([null, NOW.toISOString()]);
+  });
+
+  it("doesn't let anyone mark another person's Notification unread", () => {
+    const sam = addPerson("Sam", UserRole.Admin);
+    raiseFrom("Ana");
+    markNotificationRead(db, pat.id, idOf("Ana"), NOW);
+
+    expect(markNotificationUnread(db, sam.id, idOf("Ana"))).toBe(false);
+
+    expect(listNotifications(db, pat.id)[0].readAt).toBe(NOW.toISOString());
+  });
+
+  it("marks all of the person's Notifications Read, and nobody else's", () => {
+    const sam = addPerson("Sam", UserRole.Admin);
+    raiseFrom("Ana", minutesAfterNow(1));
+    raiseFrom("Ben", minutesAfterNow(2));
+
+    markAllNotificationsRead(db, pat.id, NOW);
+
+    expect(listNotifications(db, pat.id).map((n) => n.readAt)).toEqual([
+      NOW.toISOString(),
+      NOW.toISOString(),
+    ]);
+    expect(listNotifications(db, sam.id).map((n) => n.readAt)).toEqual([
+      null,
+      null,
+    ]);
+  });
+
+  it("archiving removes a Notification from the list, marks it Read and lists it under Archived", () => {
+    raiseFrom("Ana", minutesAfterNow(1));
+    raiseFrom("Ben", minutesAfterNow(2));
+    const ana = idOf("Ana");
+
+    expect(archiveNotification(db, pat.id, ana, NOW)).toBe(true);
+
+    expect(buyerNamesIn(listNotifications(db, pat.id))).toEqual(["Ben"]);
+    const archived = listArchivedNotifications(db, pat.id);
+    expect(buyerNamesIn(archived)).toEqual(["Ana"]);
+    expect(archived[0]).toMatchObject({
+      id: ana,
+      readAt: NOW.toISOString(),
+      link: "/admin/refunds",
+    });
+  });
+
+  it("archived Notifications don't count as unseen", () => {
+    raiseFrom("Ana");
+
+    archiveNotification(db, pat.id, idOf("Ana"), NOW);
+
+    expect(countUnseenNotifications(db, pat.id)).toBe(0);
+  });
+
+  it("lists Archived Notifications newest first", () => {
+    raiseFrom("Ana", minutesAfterNow(1));
+    raiseFrom("Ben", minutesAfterNow(2));
+    const ana = idOf("Ana");
+    const ben = idOf("Ben");
+
+    archiveNotification(db, pat.id, ana, minutesAfterNow(4));
+    archiveNotification(db, pat.id, ben, minutesAfterNow(3));
+
+    expect(buyerNamesIn(listArchivedNotifications(db, pat.id))).toEqual([
+      "Ben",
+      "Ana",
+    ]);
+  });
+
+  it("mark all as Read leaves Archived Notifications alone", () => {
+    raiseFrom("Ana");
+    const ana = idOf("Ana");
+    archiveNotification(db, pat.id, ana, NOW);
+    markNotificationUnread(db, pat.id, ana);
+
+    markAllNotificationsRead(db, pat.id, minutesAfterNow(5));
+
+    expect(listArchivedNotifications(db, pat.id)[0].readAt).toBeNull();
+  });
+
+  it("unarchiving returns a Notification to the list and it stays Read", () => {
+    raiseFrom("Ana");
+    const ana = idOf("Ana");
+    archiveNotification(db, pat.id, ana, NOW);
+
+    expect(unarchiveNotification(db, pat.id, ana)).toBe(true);
+
+    expect(listArchivedNotifications(db, pat.id)).toEqual([]);
+    expect(listNotifications(db, pat.id)).toEqual([
+      expect.objectContaining({ id: ana, readAt: NOW.toISOString() }),
+    ]);
+  });
+
+  it("doesn't let anyone archive, unarchive or list another person's Notifications", () => {
+    const sam = addPerson("Sam", UserRole.Admin);
+    raiseFrom("Ana");
+    raiseFrom("Ben");
+    const ana = idOf("Ana");
+    const ben = idOf("Ben");
+    archiveNotification(db, pat.id, ben, NOW);
+
+    expect(archiveNotification(db, sam.id, ana, NOW)).toBe(false);
+    expect(unarchiveNotification(db, sam.id, ben)).toBe(false);
+
+    expect(listArchivedNotifications(db, sam.id)).toEqual([]);
+    expect(buyerNamesIn(listNotifications(db, pat.id))).toEqual(["Ana"]);
+    expect(buyerNamesIn(listArchivedNotifications(db, pat.id))).toEqual([
+      "Ben",
+    ]);
   });
 });

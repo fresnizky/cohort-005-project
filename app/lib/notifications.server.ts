@@ -1,4 +1,14 @@
-import { and, count, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import {
+  and,
+  count,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  ne,
+  sql,
+} from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "~/db/schema";
 import {
@@ -299,6 +309,104 @@ export function markNotificationRead(
     .where(ownedBy(userId, notificationId))
     .run();
   return true;
+}
+
+/** Marks one of the person's Notifications unread. False if it isn't theirs. */
+export function markNotificationUnread(
+  db: Queryable,
+  userId: number,
+  notificationId: number
+): boolean {
+  const updated = db
+    .update(notifications)
+    .set({ readAt: null })
+    .where(ownedBy(userId, notificationId))
+    .returning({ id: notifications.id })
+    .all();
+  return updated.length > 0;
+}
+
+/** Marks every one of the person's non-Archived Notifications Read. */
+export function markAllNotificationsRead(
+  db: Queryable,
+  userId: number,
+  now: Date
+) {
+  db.update(notifications)
+    .set({ readAt: now.toISOString() })
+    .where(
+      and(
+        eq(notifications.recipientUserId, userId),
+        isNull(notifications.readAt),
+        isNull(notifications.archivedAt)
+      )
+    )
+    .run();
+}
+
+/**
+ * Archives one of the person's Notifications: it leaves the list and is
+ * marked Read. Never deletes it. False if it isn't theirs.
+ */
+export function archiveNotification(
+  db: Queryable,
+  userId: number,
+  notificationId: number,
+  now: Date
+): boolean {
+  const updated = db
+    .update(notifications)
+    .set({
+      archivedAt: now.toISOString(),
+      readAt: sql`coalesce(${notifications.readAt}, ${now.toISOString()})`,
+    })
+    .where(ownedBy(userId, notificationId))
+    .returning({ id: notifications.id })
+    .all();
+  return updated.length > 0;
+}
+
+/**
+ * Moves one of the person's Archived Notifications back into the list. It
+ * stays Read. False if it isn't theirs.
+ */
+export function unarchiveNotification(
+  db: Queryable,
+  userId: number,
+  notificationId: number
+): boolean {
+  const updated = db
+    .update(notifications)
+    .set({ archivedAt: null })
+    .where(ownedBy(userId, notificationId))
+    .returning({ id: notifications.id })
+    .all();
+  return updated.length > 0;
+}
+
+/** The person's Archived Notifications, newest first. */
+export function listArchivedNotifications(db: Queryable, userId: number) {
+  return db
+    .select({
+      id: notifications.id,
+      role: notifications.role,
+      kind: notifications.kind,
+      sentence: notifications.sentence,
+      excerpt: notifications.excerpt,
+      link: notifications.link,
+      createdAt: notifications.createdAt,
+      seenAt: notifications.seenAt,
+      readAt: notifications.readAt,
+    })
+    .from(notifications)
+    .where(
+      and(
+        eq(notifications.recipientUserId, userId),
+        isNotNull(notifications.archivedAt)
+      )
+    )
+    .orderBy(desc(notifications.createdAt), desc(notifications.id))
+    .all();
 }
 
 /**
