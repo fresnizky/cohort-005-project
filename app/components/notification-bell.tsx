@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useFetcher } from "react-router";
-import { Bell } from "lucide-react";
+import { Archive, ArchiveRestore, Bell, Mail, MailOpen } from "lucide-react";
 import { cn, formatRelativeTime } from "~/lib/utils";
 import { notificationKindLabel } from "~/lib/notification-kinds";
 import { NotificationRole, type SentenceSegment } from "~/db/schema";
@@ -14,6 +14,9 @@ import type { loader as listLoader } from "~/routes/api.notifications";
 const NOTIFICATIONS_PATH = "/api/notifications";
 const UNSEEN_COUNT_PATH = "/api/notifications/unseen-count";
 const POLL_INTERVAL_MS = 30_000;
+
+// The dropdown shows either the main list or the Archived Notifications.
+type NotificationView = "list" | "archived";
 
 type ListedNotification = NonNullable<
   ReturnType<typeof useFetcher<typeof listLoader>>["data"]
@@ -82,7 +85,9 @@ function useClickOutside(
 export function NotificationBell() {
   const unseen = useUnseenCount();
   const [open, setOpen] = useState(false);
+  const [view, setView] = useState<NotificationView>("list");
   const list = useFetcher<typeof listLoader>();
+  const markAllRead = useFetcher();
   const markSeen = useFetcher();
   const ref = useRef<HTMLDivElement>(null);
   useClickOutside(ref, () => setOpen(false), open);
@@ -104,10 +109,23 @@ export function NotificationBell() {
     );
   }, [open, notifications, markSeen]);
 
+  function show(next: NotificationView) {
+    setView(next);
+    void list.load(
+      next === "archived"
+        ? `${NOTIFICATIONS_PATH}?view=archived`
+        : NOTIFICATIONS_PATH
+    );
+  }
+
   function toggle() {
-    if (!open) void list.load(NOTIFICATIONS_PATH);
+    if (!open) show("list");
     setOpen(!open);
   }
+
+  const hasUnread =
+    view === "list" &&
+    !!notifications?.some((notification) => notification.readAt === null);
 
   return (
     <div ref={ref} className="relative">
@@ -127,10 +145,51 @@ export function NotificationBell() {
       {open && (
         <div className="absolute left-0 top-10 z-50 w-96 rounded-lg border bg-popover text-popover-foreground shadow-2xl">
           <div className="flex items-center justify-between border-b px-3 py-2">
-            <span className="text-sm font-semibold">Notifications</span>
+            {view === "list" ? (
+              <>
+                <span className="text-sm font-semibold">Notifications</span>
+                <span className="flex items-center gap-3 text-xs">
+                  {hasUnread && (
+                    <button
+                      type="button"
+                      className="text-primary hover:underline"
+                      onClick={() =>
+                        void markAllRead.submit(
+                          { intent: "mark-all-read" },
+                          { method: "post", action: NOTIFICATIONS_PATH }
+                        )
+                      }
+                    >
+                      Mark all as Read
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="text-muted-foreground hover:underline"
+                    onClick={() => show("archived")}
+                  >
+                    Archived
+                  </button>
+                </span>
+              </>
+            ) : (
+              <>
+                <span className="text-sm font-semibold">
+                  Archived Notifications
+                </span>
+                <button
+                  type="button"
+                  className="text-xs text-muted-foreground hover:underline"
+                  onClick={() => show("list")}
+                >
+                  Back
+                </button>
+              </>
+            )}
           </div>
           <NotificationList
             notifications={notifications}
+            view={view}
             onOpen={() => setOpen(false)}
           />
         </div>
@@ -150,9 +209,11 @@ function UnseenBadge({ count }: { count: number }) {
 
 function NotificationList({
   notifications,
+  view,
   onOpen,
 }: {
   notifications: ListedNotification[] | undefined;
+  view: NotificationView;
   onOpen: () => void;
 }) {
   if (!notifications) {
@@ -164,7 +225,9 @@ function NotificationList({
   if (notifications.length === 0) {
     return (
       <p className="p-6 text-center text-sm text-muted-foreground">
-        No Notifications yet.
+        {view === "archived"
+          ? "No Archived Notifications."
+          : "No Notifications yet."}
       </p>
     );
   }
@@ -175,6 +238,7 @@ function NotificationList({
         <NotificationItem
           key={notification.id}
           notification={notification}
+          view={view}
           onOpen={onOpen}
         />
       ))}
@@ -195,12 +259,15 @@ const ROLE_COLORS: Record<NotificationRole, string> = {
 
 function NotificationItem({
   notification,
+  view,
   onOpen,
 }: {
   notification: ListedNotification;
+  view: NotificationView;
   onOpen: () => void;
 }) {
   const openFetcher = useFetcher();
+  const manage = useFetcher();
   const isRead = notification.readAt !== null;
 
   // Opening marks it Read; the action then redirects to its link.
@@ -212,15 +279,24 @@ function NotificationItem({
     onOpen();
   }
 
+  function act(intent: string) {
+    void manage.submit(
+      { intent, notificationId: notification.id },
+      { method: "post", action: NOTIFICATIONS_PATH }
+    );
+  }
+
   return (
-    <li className="border-b last:border-0">
+    <li
+      className={cn(
+        "group flex border-b last:border-0",
+        !isRead && "bg-primary/5"
+      )}
+    >
       <button
         type="button"
         onClick={open}
-        className={cn(
-          "flex w-full gap-2 px-3 py-2.5 text-left hover:bg-muted/60",
-          !isRead && "bg-primary/5"
-        )}
+        className="flex min-w-0 flex-1 gap-2 px-3 py-2.5 text-left hover:bg-muted/60"
       >
         <span
           className={cn(
@@ -253,7 +329,52 @@ function NotificationItem({
           )}
         </span>
       </button>
+      <span className="flex shrink-0 flex-col justify-center gap-1 px-2">
+        {view === "list" ? (
+          <>
+            <ItemAction
+              label={isRead ? "Mark as unread" : "Mark as Read"}
+              onClick={() => act(isRead ? "mark-unread" : "mark-read")}
+            >
+              {isRead ? (
+                <Mail className="size-3.5" />
+              ) : (
+                <MailOpen className="size-3.5" />
+              )}
+            </ItemAction>
+            <ItemAction label="Archive" onClick={() => act("archive")}>
+              <Archive className="size-3.5" />
+            </ItemAction>
+          </>
+        ) : (
+          <ItemAction label="Move back" onClick={() => act("unarchive")}>
+            <ArchiveRestore className="size-3.5" />
+          </ItemAction>
+        )}
+      </span>
     </li>
+  );
+}
+
+function ItemAction({
+  label,
+  onClick,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+      className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+    >
+      {children}
+    </button>
   );
 }
 
