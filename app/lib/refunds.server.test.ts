@@ -2,7 +2,13 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { createTestDb, seedBaseData } from "~/test/setup";
 import * as schema from "~/db/schema";
-import { LessonProgressStatus, RefundStatus, UserRole } from "~/db/schema";
+import {
+  LessonProgressStatus,
+  NotificationKindName,
+  RefundStatus,
+  UserRole,
+} from "~/db/schema";
+import { listNotifications } from "./notifications.server";
 import {
   approveRefundRequest,
   checkRefundRequest,
@@ -234,6 +240,28 @@ describe("raising a Refund Request", () => {
       ok: false,
       status: 403,
     });
+  });
+
+  it("notifies every Platform Admin when it is raised", () => {
+    const purchase = buyForSelf(base.user.id);
+
+    raise(purchase.id, base.user.id);
+
+    expect(listNotifications(db, platformAdmin.id)).toEqual([
+      expect.objectContaining({
+        kind: NotificationKindName.Refunds,
+        link: "/admin/refunds",
+      }),
+    ]);
+    expect(listNotifications(db, base.user.id)).toEqual([]);
+  });
+
+  it("notifies nobody when it can't be raised", () => {
+    const purchase = buyForSelf(base.user.id, 15);
+
+    raiseRefundRequest(db, purchase.id, base.user.id, "Too late.", NOW);
+
+    expect(listNotifications(db, platformAdmin.id)).toEqual([]);
   });
 });
 
