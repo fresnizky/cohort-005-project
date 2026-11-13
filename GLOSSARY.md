@@ -102,3 +102,14 @@ _Avoid_: Alert, Message (on its own), Email
 **Notification Kind**:
 One type of Notification, belonging to exactly one role, that a person can switch off in their settings.
 _Avoid_: Notification type, Category, Event
+
+**Seen**:
+A Notification that has been shown in the open bell list. Opening the bell marks everything in it as Seen. The bell's badge counts Notifications that aren't Seen yet.
+
+**Read**:
+A Notification that has been opened (clicked through to its page), marked as read, or Archived. Unread Notifications sit at the top of the bell list, above the Read ones.
+_Avoid_: Opened, Viewed
+
+**Archive**:
+To clear a Notification from the bell list without deleting it; archiving also marks it Read. Archived Notifications stay reachable and can be moved back. Notifications are never hard-deleted.
+_Avoid_: Delete, Dismiss, Done, Clear
