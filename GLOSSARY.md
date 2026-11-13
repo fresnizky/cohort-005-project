@@ -98,3 +98,7 @@ _Avoid_: Watch cap, Viewing threshold
 **Notification**:
 A message telling a Student, Instructor, Platform Admin or Team Admin that something relevant to their role happened on Cadence. Marketing and promotional messages are not Notifications.
 _Avoid_: Alert, Message (on its own), Email
+
+**Notification Kind**:
+One type of Notification, belonging to exactly one role, that a person can switch off in their settings.
+_Avoid_: Notification type, Category, Event
