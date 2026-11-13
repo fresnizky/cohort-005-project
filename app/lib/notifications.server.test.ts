@@ -18,10 +18,13 @@ import {
   markNotificationUnread,
   markNotificationsSeen,
   notifyRefundRequestDecided,
+  notifyEnrollmentCreated,
   notifyRefundRequestRaised,
+  notifySeatClaimed,
   openNotification,
   unarchiveNotification,
 } from "./notifications.server";
+import { approveRefundRequest } from "./refunds.server";
 
 type TestDb = ReturnType<typeof createTestDb>;
 
@@ -555,6 +558,167 @@ describe("managing Notifications", () => {
     expect(buyerNamesIn(listNotifications(db, pat.id))).toEqual(["Ana"]);
     expect(buyerNamesIn(listArchivedNotifications(db, pat.id))).toEqual([
       "Ben",
+    ]);
+  });
+});
+
+// ─── Enrollments and Seats (#17) ───
+
+function enroll(userId: number) {
+  const enrollment = db
+    .insert(schema.enrollments)
+    .values({ userId, courseId: base.course.id })
+    .returning()
+    .get();
+  notifyEnrollmentCreated(db, enrollment.id, NOW);
+  return enrollment;
+}
+
+describe("a Student gets an Enrollment", () => {
+  it("notifies the course's Instructor with Instructor · Enrollments", () => {
+    buyForSelf(base.user.id);
+    enroll(base.user.id);
+
+    expect(listNotifications(db, base.instructor.id)).toEqual([
+      expect.objectContaining({
+        role: NotificationRole.Instructor,
+        kind: NotificationKindName.Enrollments,
+        sentence: [
+          { text: "Test User", emphasis: true },
+          { text: " enrolled in ", emphasis: false },
+          { text: "Test Course", emphasis: true },
+        ],
+        excerpt: null,
+        link: `/instructor/${base.course.id}/students`,
+        createdAt: NOW.toISOString(),
+      }),
+    ]);
+    expect(listNotifications(db, base.user.id)).toEqual([]);
+  });
+
+  it("doesn't notify an Instructor who enrolls on their own course", () => {
+    enroll(base.instructor.id);
+
+    expect(listNotifications(db, base.instructor.id)).toEqual([]);
+  });
+
+  it("doesn't notify the Instructor when an Enrollment ends", () => {
+    const pat = addPerson("Pat", UserRole.Admin);
+    const purchase = buyForSelf(base.user.id);
+    enroll(base.user.id);
+    const refundRequest = raiseOn(purchase.id);
+    const before = listNotifications(db, base.instructor.id);
+
+    const result = approveRefundRequest(
+      db,
+      refundRequest.id,
+      pat.id,
+      null,
+      NOW
+    );
+
+    expect(result.ok).toBe(true);
+    expect(listNotifications(db, base.instructor.id)).toEqual(before);
+  });
+});
+
+/** A Team Licence with one Seat, bought by the first Team Admin. */
+function teamLicenceSeat(teamAdminIds: number[], memberIds: number[] = []) {
+  const team = db.insert(schema.teams).values({}).returning().get();
+  for (const userId of teamAdminIds) {
+    db.insert(schema.teamMembers)
+      .values({ teamId: team.id, userId, role: schema.TeamMemberRole.Admin })
+      .run();
+  }
+  for (const userId of memberIds) {
+    db.insert(schema.teamMembers)
+      .values({ teamId: team.id, userId, role: schema.TeamMemberRole.Member })
+      .run();
+  }
+  const purchase = buyForSelf(teamAdminIds[0]);
+  return db
+    .insert(schema.coupons)
+    .values({
+      teamId: team.id,
+      courseId: base.course.id,
+      code: `SEAT-${purchase.id}`,
+      purchaseId: purchase.id,
+    })
+    .returning()
+    .get();
+}
+
+/** Claims a Seat the way the redeem route does. */
+function claimSeat(couponId: number, userId: number) {
+  db.update(schema.coupons)
+    .set({ redeemedByUserId: userId, redeemedAt: NOW.toISOString() })
+    .where(eq(schema.coupons.id, couponId))
+    .run();
+  enroll(userId);
+  notifySeatClaimed(db, couponId, NOW);
+}
+
+describe("a Student claims a Seat", () => {
+  it("notifies the Team Admin with Team Admin · Seats and the Instructor with Instructor · Enrollments", () => {
+    const tara = addPerson("Tara", UserRole.Student);
+    const seat = teamLicenceSeat([tara.id]);
+
+    claimSeat(seat.id, base.user.id);
+
+    expect(listNotifications(db, tara.id)).toEqual([
+      expect.objectContaining({
+        role: NotificationRole.TeamAdmin,
+        kind: NotificationKindName.Seats,
+        sentence: [
+          { text: "Test User", emphasis: true },
+          { text: " claimed a Seat on your ", emphasis: false },
+          { text: "Test Course", emphasis: true },
+          { text: " Team Licence", emphasis: false },
+        ],
+        excerpt: null,
+        link: "/team",
+        createdAt: NOW.toISOString(),
+      }),
+    ]);
+    expect(listNotifications(db, base.instructor.id)).toEqual([
+      expect.objectContaining({
+        role: NotificationRole.Instructor,
+        kind: NotificationKindName.Enrollments,
+      }),
+    ]);
+    expect(listNotifications(db, base.user.id)).toEqual([]);
+  });
+
+  it("notifies every Team Admin of the team but not its other members", () => {
+    const tara = addPerson("Tara", UserRole.Student);
+    const theo = addPerson("Theo", UserRole.Student);
+    const mia = addPerson("Mia", UserRole.Student);
+    const seat = teamLicenceSeat([tara.id, theo.id], [mia.id]);
+
+    claimSeat(seat.id, base.user.id);
+
+    expect(listNotifications(db, tara.id)).toHaveLength(1);
+    expect(listNotifications(db, theo.id)).toHaveLength(1);
+    expect(listNotifications(db, mia.id)).toEqual([]);
+  });
+
+  it("doesn't notify a Team Admin who claims their own Seat", () => {
+    const tara = addPerson("Tara", UserRole.Student);
+    const theo = addPerson("Theo", UserRole.Student);
+    const seat = teamLicenceSeat([tara.id, theo.id]);
+
+    claimSeat(seat.id, tara.id);
+
+    expect(listNotifications(db, tara.id)).toEqual([]);
+    expect(listNotifications(db, theo.id)).toEqual([
+      expect.objectContaining({
+        sentence: [
+          { text: "Tara", emphasis: true },
+          { text: " claimed a Seat on your ", emphasis: false },
+          { text: "Test Course", emphasis: true },
+          { text: " Team Licence", emphasis: false },
+        ],
+      }),
     ]);
   });
 });
