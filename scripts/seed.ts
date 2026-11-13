@@ -14,11 +14,7 @@ import {
   QuestionType,
   TeamMemberRole,
 } from "../app/db/schema";
-import {
-  notifyRefundRequestRaised,
-  setNotificationKindEnabled,
-} from "../app/lib/notifications.server";
-import { NotificationKinds } from "../app/lib/notification-kinds";
+import { notifyRefundRequestRaised } from "../app/lib/notifications.server";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -2821,19 +2817,6 @@ This course is still in draft while the cluster examples are rewritten against t
   );
 
   console.log("Created Marta's Refund Request on her Team Licence.");
-
-  // ─── Notification settings ───
-  // Everyone else has every Notification Kind on (nothing stored). Liam has
-  // turned off replies to his comments, so Settings shows a choice that sticks.
-
-  setNotificationKindEnabled(
-    db,
-    liam.id,
-    NotificationKinds.StudentComments,
-    false
-  );
-
-  console.log("Created Notification settings.");
 
   // ─── Flush watch events ───
   // Batched: the heartbeat makes these by far the largest table, and one
