@@ -5,13 +5,19 @@ import {
   coupons,
   courses,
   notifications,
+  notificationSettings,
+  NotificationRole,
   purchases,
   refunds,
+  teamMembers,
+  TeamMemberRole,
   users,
   UserRole,
+  type NotificationKindName,
   type SentenceSegment,
 } from "~/db/schema";
 import {
+  ALL_NOTIFICATION_KINDS,
   NotificationKinds,
   type NotificationKind,
 } from "~/lib/notification-kinds";
@@ -63,6 +69,16 @@ function writeNotification(
   notification: NewNotification,
   now: Date
 ) {
+  if (
+    !isNotificationKindEnabled(
+      db,
+      notification.recipientUserId,
+      notification.kind
+    )
+  ) {
+    return;
+  }
+
   db.insert(notifications)
     .values({
       recipientUserId: notification.recipientUserId,
@@ -266,4 +282,158 @@ export function openNotification(
 
   markNotificationRead(db, userId, notificationId, now);
   return notification.link;
+}
+
+// ─── Settings ───
+// Only explicit choices are stored; a missing setting means on.
+
+const ROLE_FROM_USER_ROLE: Record<UserRole, NotificationRole> = {
+  [UserRole.Student]: NotificationRole.Student,
+  [UserRole.Instructor]: NotificationRole.Instructor,
+  [UserRole.Admin]: NotificationRole.PlatformAdmin,
+};
+
+/**
+ * The roles a person currently holds: one from their user role, plus Team
+ * Admin if they are an admin on any team.
+ */
+function rolesHeld(db: Queryable, userId: number): NotificationRole[] {
+  const user = db
+    .select({ role: users.role })
+    .from(users)
+    .where(eq(users.id, userId))
+    .get();
+  if (!user) return [];
+
+  const roles = [ROLE_FROM_USER_ROLE[user.role]];
+
+  const teamAdmin = db
+    .select({ id: teamMembers.id })
+    .from(teamMembers)
+    .where(
+      and(
+        eq(teamMembers.userId, userId),
+        eq(teamMembers.role, TeamMemberRole.Admin)
+      )
+    )
+    .get();
+  if (teamAdmin) roles.push(NotificationRole.TeamAdmin);
+
+  return roles;
+}
+
+export type NotificationRoleSettings = {
+  role: NotificationRole;
+  enabled: boolean;
+  kinds: { kind: NotificationKindName; enabled: boolean }[];
+};
+
+/**
+ * Each role the person currently holds with its toggle, and that role's
+ * Notification Kinds with their own toggles.
+ */
+export function getNotificationSettings(
+  db: Queryable,
+  userId: number
+): NotificationRoleSettings[] {
+  return rolesHeld(db, userId).map((role) => ({
+    role,
+    enabled: storedSetting(db, userId, role, null) !== false,
+    kinds: ALL_NOTIFICATION_KINDS.filter((kind) => kind.role === role).map(
+      (kind) => ({
+        kind: kind.kind,
+        enabled: storedSetting(db, userId, role, kind.kind) !== false,
+      })
+    ),
+  }));
+}
+
+/** The stored choice for a role toggle (kind null) or a kind toggle. */
+function storedSetting(
+  db: Queryable,
+  userId: number,
+  role: NotificationRole,
+  kind: NotificationKindName | null
+): boolean | undefined {
+  return db
+    .select({ enabled: notificationSettings.enabled })
+    .from(notificationSettings)
+    .where(
+      and(
+        eq(notificationSettings.userId, userId),
+        eq(notificationSettings.role, role),
+        kind === null
+          ? isNull(notificationSettings.kind)
+          : eq(notificationSettings.kind, kind)
+      )
+    )
+    .get()?.enabled;
+}
+
+function storeSetting(
+  db: Queryable,
+  userId: number,
+  role: NotificationRole,
+  kind: NotificationKindName | null,
+  enabled: boolean
+) {
+  // Done by hand rather than with an upsert: SQLite treats null kinds as
+  // distinct, so the unique index can't catch a second role toggle row.
+  if (storedSetting(db, userId, role, kind) === undefined) {
+    db.insert(notificationSettings)
+      .values({ userId, role, kind, enabled })
+      .run();
+    return;
+  }
+
+  db.update(notificationSettings)
+    .set({ enabled })
+    .where(
+      and(
+        eq(notificationSettings.userId, userId),
+        eq(notificationSettings.role, role),
+        kind === null
+          ? isNull(notificationSettings.kind)
+          : eq(notificationSettings.kind, kind)
+      )
+    )
+    .run();
+}
+
+/**
+ * Turns a role's toggle on or off. Each kind under it keeps its own setting,
+ * which applies again once the role is back on.
+ */
+export function setNotificationRoleEnabled(
+  db: Queryable,
+  userId: number,
+  role: NotificationRole,
+  enabled: boolean
+) {
+  storeSetting(db, userId, role, null, enabled);
+}
+
+/** Turns one Notification Kind on or off. Only affects later Notifications. */
+export function setNotificationKindEnabled(
+  db: Queryable,
+  userId: number,
+  kind: NotificationKind,
+  enabled: boolean
+) {
+  storeSetting(db, userId, kind.role, kind.kind, enabled);
+}
+
+/**
+ * A kind is on only if both its role toggle and its own toggle are on, where
+ * a missing setting counts as on.
+ */
+export function isNotificationKindEnabled(
+  db: Queryable,
+  userId: number,
+  kind: NotificationKind
+): boolean {
+  return (
+    storedSetting(db, userId, kind.role, kind.kind) !== false &&
+    storedSetting(db, userId, kind.role, null) !== false
+  );
 }

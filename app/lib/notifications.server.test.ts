@@ -1,14 +1,25 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import { eq } from "drizzle-orm";
 import { createTestDb, seedBaseData } from "~/test/setup";
 import * as schema from "~/db/schema";
-import { NotificationKindName, NotificationRole, UserRole } from "~/db/schema";
+import {
+  NotificationKindName,
+  NotificationRole,
+  TeamMemberRole,
+  UserRole,
+} from "~/db/schema";
+import { NotificationKinds } from "~/lib/notification-kinds";
 import {
   countUnseenNotifications,
+  getNotificationSettings,
+  isNotificationKindEnabled,
   listNotifications,
   markNotificationRead,
   markNotificationsSeen,
   notifyRefundRequestRaised,
   openNotification,
+  setNotificationKindEnabled,
+  setNotificationRoleEnabled,
 } from "./notifications.server";
 
 type TestDb = ReturnType<typeof createTestDb>;
@@ -278,5 +289,186 @@ describe("the bell", () => {
       readAt: null,
     });
     expect(countUnseenNotifications(db, pat.id)).toBe(1);
+  });
+});
+
+describe("notification settings", () => {
+  function makeTeamAdmin(userId: number) {
+    const team = db.insert(schema.teams).values({}).returning().get();
+    return db
+      .insert(schema.teamMembers)
+      .values({ teamId: team.id, userId, role: TeamMemberRole.Admin })
+      .returning()
+      .get();
+  }
+
+  it("lists the roles a person holds with every kind on when nothing is stored", () => {
+    makeTeamAdmin(base.user.id);
+
+    expect(getNotificationSettings(db, base.user.id)).toEqual([
+      {
+        role: NotificationRole.Student,
+        enabled: true,
+        kinds: [
+          { kind: NotificationKindName.Refunds, enabled: true },
+          { kind: NotificationKindName.Comments, enabled: true },
+        ],
+      },
+      {
+        role: NotificationRole.TeamAdmin,
+        enabled: true,
+        kinds: [
+          { kind: NotificationKindName.Seats, enabled: true },
+          { kind: NotificationKindName.Refunds, enabled: true },
+        ],
+      },
+    ]);
+  });
+
+  it("lists only the roles a person currently holds", () => {
+    const pat = addPerson("Pat", UserRole.Admin);
+    makeTeamAdmin(base.instructor.id);
+    const team = db.insert(schema.teams).values({}).returning().get();
+    db.insert(schema.teamMembers)
+      .values({ teamId: team.id, userId: pat.id, role: TeamMemberRole.Member })
+      .run();
+
+    expect(
+      getNotificationSettings(db, pat.id).map((setting) => setting.role)
+    ).toEqual([NotificationRole.PlatformAdmin]);
+    expect(
+      getNotificationSettings(db, base.instructor.id).map(
+        (setting) => setting.role
+      )
+    ).toEqual([NotificationRole.Instructor, NotificationRole.TeamAdmin]);
+  });
+
+  it("writes nothing for a kind that is turned off, and resumes fresh when it is turned back on", () => {
+    const pat = addPerson("Pat", UserRole.Admin);
+    const sam = addPerson("Sam", UserRole.Admin);
+
+    setNotificationKindEnabled(
+      db,
+      pat.id,
+      NotificationKinds.PlatformAdminRefunds,
+      false
+    );
+    raiseOn(buyForSelf(base.user.id).id);
+
+    expect(listNotifications(db, pat.id)).toEqual([]);
+    expect(countUnseenNotifications(db, pat.id)).toBe(0);
+    expect(listNotifications(db, sam.id)).toHaveLength(1);
+
+    setNotificationKindEnabled(
+      db,
+      pat.id,
+      NotificationKinds.PlatformAdminRefunds,
+      true
+    );
+    raiseOn(buyForSelf(base.user.id).id, minutesAfterNow(5));
+
+    expect(listNotifications(db, pat.id)).toEqual([
+      expect.objectContaining({ createdAt: minutesAfterNow(5).toISOString() }),
+    ]);
+    expect(listNotifications(db, sam.id)).toHaveLength(2);
+  });
+
+  it("writes nothing for any kind under a role that is turned off", () => {
+    const pat = addPerson("Pat", UserRole.Admin);
+
+    setNotificationRoleEnabled(db, pat.id, NotificationRole.PlatformAdmin, false);
+    raiseOn(buyForSelf(base.user.id).id);
+
+    expect(listNotifications(db, pat.id)).toEqual([]);
+    expect(
+      isNotificationKindEnabled(db, pat.id, NotificationKinds.PlatformAdminRefunds)
+    ).toBe(false);
+  });
+
+  it("keeps each kind's own setting while its role is off, and applies it again when the role is turned back on", () => {
+    makeTeamAdmin(base.user.id);
+    setNotificationKindEnabled(db, base.user.id, NotificationKinds.TeamAdminSeats, false);
+
+    setNotificationRoleEnabled(db, base.user.id, NotificationRole.TeamAdmin, false);
+
+    expect(
+      isNotificationKindEnabled(db, base.user.id, NotificationKinds.TeamAdminRefunds)
+    ).toBe(false);
+    expect(getNotificationSettings(db, base.user.id)).toContainEqual({
+      role: NotificationRole.TeamAdmin,
+      enabled: false,
+      kinds: [
+        { kind: NotificationKindName.Seats, enabled: false },
+        { kind: NotificationKindName.Refunds, enabled: true },
+      ],
+    });
+
+    setNotificationRoleEnabled(db, base.user.id, NotificationRole.TeamAdmin, true);
+
+    expect(
+      isNotificationKindEnabled(db, base.user.id, NotificationKinds.TeamAdminRefunds)
+    ).toBe(true);
+    expect(
+      isNotificationKindEnabled(db, base.user.id, NotificationKinds.TeamAdminSeats)
+    ).toBe(false);
+  });
+
+  it("counts a kind with no stored setting as on, even when every other kind in the role is off", () => {
+    setNotificationKindEnabled(db, base.user.id, NotificationKinds.StudentRefunds, false);
+
+    expect(
+      isNotificationKindEnabled(db, base.user.id, NotificationKinds.StudentComments)
+    ).toBe(true);
+    expect(getNotificationSettings(db, base.user.id)).toEqual([
+      {
+        role: NotificationRole.Student,
+        enabled: true,
+        kinds: [
+          { kind: NotificationKindName.Refunds, enabled: false },
+          { kind: NotificationKindName.Comments, enabled: true },
+        ],
+      },
+    ]);
+  });
+
+  it("keeps a role's settings through losing and regaining that role", () => {
+    const membership = makeTeamAdmin(base.user.id);
+    setNotificationRoleEnabled(db, base.user.id, NotificationRole.TeamAdmin, false);
+    setNotificationKindEnabled(db, base.user.id, NotificationKinds.TeamAdminSeats, false);
+
+    db.update(schema.teamMembers)
+      .set({ role: TeamMemberRole.Member })
+      .where(eq(schema.teamMembers.id, membership.id))
+      .run();
+    expect(
+      getNotificationSettings(db, base.user.id).map((setting) => setting.role)
+    ).toEqual([NotificationRole.Student]);
+
+    db.update(schema.teamMembers)
+      .set({ role: TeamMemberRole.Admin })
+      .where(eq(schema.teamMembers.id, membership.id))
+      .run();
+    expect(getNotificationSettings(db, base.user.id)).toContainEqual({
+      role: NotificationRole.TeamAdmin,
+      enabled: false,
+      kinds: [
+        { kind: NotificationKindName.Seats, enabled: false },
+        { kind: NotificationKindName.Refunds, enabled: true },
+      ],
+    });
+  });
+
+  it("keeps the Notifications a person received after they lose the role", () => {
+    const pat = addPerson("Pat", UserRole.Admin);
+    raiseOn(buyForSelf(base.user.id).id);
+
+    db.update(schema.users)
+      .set({ role: UserRole.Student })
+      .where(eq(schema.users.id, pat.id))
+      .run();
+
+    expect(listNotifications(db, pat.id)).toEqual([
+      expect.objectContaining({ role: NotificationRole.PlatformAdmin }),
+    ]);
   });
 });
