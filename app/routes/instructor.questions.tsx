@@ -12,9 +12,14 @@ import { Textarea } from "~/components/ui/textarea";
 import { UserAvatar } from "~/components/user-avatar";
 import { AlertTriangle, CheckCircle2, ExternalLink } from "lucide-react";
 import { cn, daysSince, formatRelativeTime } from "~/lib/utils";
-import { MIN_COMMENT_LENGTH, MAX_COMMENT_LENGTH } from "~/lib/comments";
+import {
+  MIN_COMMENT_LENGTH,
+  MAX_COMMENT_LENGTH,
+  commentAnchorId,
+} from "~/lib/comments";
 import { parseFormData } from "~/lib/validation";
 import { db } from "~/db";
+import { notifyCommentPosted } from "~/lib/notifications.server";
 import {
   comments,
   courses,
@@ -149,11 +154,15 @@ function createComment(
     }
   }
 
-  return db
-    .insert(comments)
-    .values({ userId, lessonId, parentId, body: trimmed })
-    .returning()
-    .get();
+  return db.transaction((tx) => {
+    const comment = tx
+      .insert(comments)
+      .values({ userId, lessonId, parentId, body: trimmed })
+      .returning()
+      .get();
+    notifyCommentPosted(tx, comment.id, new Date());
+    return comment;
+  });
 }
 
 // A question sitting this long without an answer gets called out visually.
@@ -254,7 +263,7 @@ function QuestionCard({ question }: { question: Question }) {
           <span>/</span>
           <span>{question.lessonTitle}</span>
           <Link
-            to={`/courses/${question.courseSlug}/lessons/${question.lessonId}`}
+            to={`/courses/${question.courseSlug}/lessons/${question.lessonId}#${commentAnchorId(question.id)}`}
             className="inline-flex items-center gap-1 hover:text-foreground"
           >
             <ExternalLink className="size-3.5" />
