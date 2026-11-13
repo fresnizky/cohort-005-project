@@ -14,6 +14,7 @@ import {
   QuestionType,
   TeamMemberRole,
 } from "../app/db/schema";
+import { notifyRefundRequestRaised } from "../app/lib/notifications.server";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -65,6 +66,8 @@ async function seed() {
 
   // Drop and recreate tables for a clean seed
   sqlite.exec(`
+    DROP TABLE IF EXISTS notification_settings;
+    DROP TABLE IF EXISTS notifications;
     DROP TABLE IF EXISTS comments;
     DROP TABLE IF EXISTS course_ratings;
     DROP TABLE IF EXISTS video_watch_events;
@@ -2772,14 +2775,23 @@ This course is still in draft while the cluster examples are rewritten against t
       updatedAt: daysAgo(6),
     })
     .run();
-  db.insert(schema.refunds)
+  const liamRequestedAt = daysAgo(4);
+  const liamRefundRequest = db
+    .insert(schema.refunds)
     .values({
       purchaseId: liamPurchase.id,
       status: RefundStatus.Open,
       reason: "Bought the wrong one, I meant the advanced course.",
-      requestedAt: daysAgo(4),
+      requestedAt: liamRequestedAt,
     })
-    .run();
+    .returning()
+    .get();
+  // The same Notifications raising it in the app would have written.
+  notifyRefundRequestRaised(
+    db,
+    liamRefundRequest.id,
+    new Date(liamRequestedAt)
+  );
 
   console.log("Created Liam's Refund Request.");
 
@@ -2787,14 +2799,22 @@ This course is still in draft while the cluster examples are rewritten against t
   // A Team Licence with no Claimed Seats, so a Platform Admin can approve it.
   // Its Seats are on hold while the request is open.
 
-  db.insert(schema.refunds)
+  const martaRequestedAt = daysAgo(1);
+  const martaRefundRequest = db
+    .insert(schema.refunds)
     .values({
       purchaseId: novakLicence.purchase.id,
       status: RefundStatus.Open,
       reason: "Our design team was reorganised and nobody needs these seats now.",
-      requestedAt: daysAgo(1),
+      requestedAt: martaRequestedAt,
     })
-    .run();
+    .returning()
+    .get();
+  notifyRefundRequestRaised(
+    db,
+    martaRefundRequest.id,
+    new Date(martaRequestedAt)
+  );
 
   console.log("Created Marta's Refund Request on her Team Licence.");
 
@@ -2840,6 +2860,10 @@ This course is still in draft while the cluster examples are rewritten against t
   console.log(`  Enrollments: ${countRows(schema.enrollments)}`);
   console.log(`  Course ratings: ${countRows(schema.courseRatings)}`);
   console.log(`  Lesson comments: ${countRows(schema.comments)}`);
+  console.log(`  Notifications: ${countRows(schema.notifications)}`);
+  console.log(
+    `  Notification settings: ${countRows(schema.notificationSettings)}`
+  );
   console.log(
     `  Lesson progress: ${countRows(schema.lessonProgress)} (${countRows(schema.lessonProgress, eq(schema.lessonProgress.status, LessonProgressStatus.Completed))} completed)`
   );

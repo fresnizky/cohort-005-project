@@ -42,6 +42,27 @@ export enum TeamMemberRole {
   Member = "member",
 }
 
+// The role a Notification is sent under. Not the same as UserRole: Team Admin
+// comes from team membership, and a Platform Admin is UserRole.Admin.
+export enum NotificationRole {
+  Student = "student",
+  Instructor = "instructor",
+  PlatformAdmin = "platform_admin",
+  TeamAdmin = "team_admin",
+}
+
+// The short name of a Notification Kind. A Notification Kind is a role plus
+// one of these; the valid pairs live in app/lib/notification-kinds.ts.
+export enum NotificationKindName {
+  Refunds = "refunds",
+  Comments = "comments",
+  Enrollments = "enrollments",
+  Seats = "seats",
+}
+
+/** One piece of a Notification's sentence. Emphasised pieces render bold. */
+export type SentenceSegment = { text: string; emphasis: boolean };
+
 // ─── Tables ───
 
 export const users = sqliteTable("users", {
@@ -374,3 +395,65 @@ export const videoWatchEvents = sqliteTable("video_watch_events", {
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
 });
+
+// One row per recipient per event. The sentence, excerpt and link are fixed
+// when the event happens, so later renames or edits never rewrite them.
+// Never hard-deleted: Archive sets archivedAt instead.
+export const notifications = sqliteTable(
+  "notifications",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    recipientUserId: integer("recipient_user_id")
+      .notNull()
+      .references(() => users.id),
+    role: text("role").notNull().$type<NotificationRole>(),
+    kind: text("kind").notNull().$type<NotificationKindName>(),
+    sentence: text("sentence", { mode: "json" })
+      .notNull()
+      .$type<SentenceSegment[]>(),
+    // Plain text, about 100 characters of a comment. Null for other kinds.
+    excerpt: text("excerpt"),
+    link: text("link").notNull(),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    seenAt: text("seen_at"),
+    readAt: text("read_at"),
+    archivedAt: text("archived_at"),
+  },
+  (table) => [
+    index("notifications_recipient_seen_idx").on(
+      table.recipientUserId,
+      table.seenAt
+    ),
+    index("notifications_recipient_list_idx").on(
+      table.recipientUserId,
+      table.archivedAt,
+      table.readAt,
+      table.createdAt
+    ),
+  ]
+);
+
+// Only the choices people actually make. A missing row means on, so every
+// Notification Kind starts on (including ones added later) and settings come
+// back when a role is regained. A null kind is the role's own toggle.
+export const notificationSettings = sqliteTable(
+  "notification_settings",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id),
+    role: text("role").notNull().$type<NotificationRole>(),
+    kind: text("kind").$type<NotificationKindName>(),
+    enabled: integer("enabled", { mode: "boolean" }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("notification_settings_user_role_kind_idx").on(
+      table.userId,
+      table.role,
+      table.kind
+    ),
+  ]
+);

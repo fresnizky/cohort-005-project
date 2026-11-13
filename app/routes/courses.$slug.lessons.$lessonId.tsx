@@ -11,6 +11,7 @@ import {
 } from "~/components/comment-thread";
 import { MIN_COMMENT_LENGTH, MAX_COMMENT_LENGTH } from "~/lib/comments";
 import { db } from "~/db";
+import { insertComment } from "~/lib/comments.server";
 import {
   categories,
   comments,
@@ -427,11 +428,11 @@ function createComment(
     }
   }
 
-  return db
-    .insert(comments)
-    .values({ userId, lessonId, parentId, body: trimmed })
-    .returning()
-    .get();
+  return insertComment(
+    db,
+    { userId, lessonId, parentId, body: trimmed },
+    new Date()
+  );
 }
 
 function updateComment(commentId: number, userId: number, body: string) {
