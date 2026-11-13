@@ -6,37 +6,37 @@ import { NotificationKindName, NotificationRole } from "~/db/schema";
 
 export type NotificationKind = {
   role: NotificationRole;
-  kind: NotificationKindName;
+  name: NotificationKindName;
 };
 
 export const NotificationKinds = {
   StudentRefunds: {
     role: NotificationRole.Student,
-    kind: NotificationKindName.Refunds,
+    name: NotificationKindName.Refunds,
   },
   StudentComments: {
     role: NotificationRole.Student,
-    kind: NotificationKindName.Comments,
+    name: NotificationKindName.Comments,
   },
   InstructorComments: {
     role: NotificationRole.Instructor,
-    kind: NotificationKindName.Comments,
+    name: NotificationKindName.Comments,
   },
   InstructorEnrollments: {
     role: NotificationRole.Instructor,
-    kind: NotificationKindName.Enrollments,
+    name: NotificationKindName.Enrollments,
   },
   PlatformAdminRefunds: {
     role: NotificationRole.PlatformAdmin,
-    kind: NotificationKindName.Refunds,
+    name: NotificationKindName.Refunds,
   },
   TeamAdminSeats: {
     role: NotificationRole.TeamAdmin,
-    kind: NotificationKindName.Seats,
+    name: NotificationKindName.Seats,
   },
   TeamAdminRefunds: {
     role: NotificationRole.TeamAdmin,
-    kind: NotificationKindName.Refunds,
+    name: NotificationKindName.Refunds,
   },
 } as const satisfies Record<string, NotificationKind>;
 
@@ -59,10 +59,23 @@ export const KIND_LABELS: Record<NotificationKindName, string> = {
   [NotificationKindName.Seats]: "Seats",
 };
 
+/**
+ * The Notification Kind with this role and name, or undefined when the role
+ * has no such kind (e.g. Instructor · Seats).
+ */
+export function findNotificationKind(
+  role: NotificationRole,
+  name: NotificationKindName
+): NotificationKind | undefined {
+  return ALL_NOTIFICATION_KINDS.find(
+    (kind) => kind.role === role && kind.name === name
+  );
+}
+
 /** "role · kind", as the bell shows it, e.g. "Platform Admin · Refunds". */
-export function notificationKindLabel({
-  role,
-  kind,
-}: NotificationKind): string {
-  return `${ROLE_LABELS[role]} · ${KIND_LABELS[kind]}`;
+export function notificationKindLabel(
+  role: NotificationRole,
+  name: NotificationKindName
+): string {
+  return `${ROLE_LABELS[role]} · ${KIND_LABELS[name]}`;
 }

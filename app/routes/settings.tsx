@@ -25,12 +25,13 @@ import { formatPrice } from "~/lib/utils";
 import { listRefundRequestsForBuyer } from "~/lib/refunds.server";
 import {
   getNotificationSettings,
+  holdsNotificationRole,
   setNotificationKindEnabled,
   setNotificationRoleEnabled,
   type NotificationRoleSettings,
 } from "~/lib/notifications.server";
 import {
-  ALL_NOTIFICATION_KINDS,
+  findNotificationKind,
   KIND_LABELS,
   ROLE_LABELS,
 } from "~/lib/notification-kinds";
@@ -98,6 +99,13 @@ export async function loader({ request }: Route.LoaderArgs) {
   };
 }
 
+// Settings are only shown, so only changed, for the roles a person holds now.
+function requireRoleHeld(userId: number, role: NotificationRole) {
+  if (!holdsNotificationRole(db, userId, role)) {
+    throw data("You don't hold that role.", { status: 404 });
+  }
+}
+
 export async function action({ request }: Route.ActionArgs) {
   const currentUserId = await getCurrentUserId(request);
 
@@ -123,6 +131,7 @@ export async function action({ request }: Route.ActionArgs) {
 
   switch (parsed.data.intent) {
     case "set-notification-role": {
+      requireRoleHeld(currentUser.id, parsed.data.role);
       setNotificationRoleEnabled(
         db,
         currentUser.id,
@@ -133,9 +142,8 @@ export async function action({ request }: Route.ActionArgs) {
     }
     case "set-notification-kind": {
       const { role, kind, enabled } = parsed.data;
-      const notificationKind = ALL_NOTIFICATION_KINDS.find(
-        (candidate) => candidate.role === role && candidate.kind === kind
-      );
+      requireRoleHeld(currentUser.id, role);
+      const notificationKind = findNotificationKind(role, kind);
       if (!notificationKind) {
         throw data("Unknown Notification Kind.", { status: 400 });
       }
@@ -352,6 +360,15 @@ function NotificationSettingsCard({
   );
 }
 
+// What a toggle posts besides `enabled`: one of the two settings intents.
+type NotificationToggleFields =
+  | { intent: "set-notification-role"; role: NotificationRole }
+  | {
+      intent: "set-notification-kind";
+      role: NotificationRole;
+      kind: NotificationKindName;
+    };
+
 function NotificationToggle({
   label,
   enabled,
@@ -360,7 +377,7 @@ function NotificationToggle({
 }: {
   label: string;
   enabled: boolean;
-  fields: Record<string, string>;
+  fields: NotificationToggleFields;
   className?: string;
 }) {
   const fetcher = useFetcher();

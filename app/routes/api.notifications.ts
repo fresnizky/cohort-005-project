@@ -1,7 +1,7 @@
 import { data, redirect } from "react-router";
 import { z } from "zod";
 import type { Route } from "./+types/api.notifications";
-import { getCurrentUserId } from "~/lib/session";
+import { requireUserId } from "~/lib/access.server";
 import { db } from "~/db";
 import { parseFormData } from "~/lib/validation";
 import {
@@ -19,18 +19,18 @@ import {
 // The bell's list (loader) and every action taken from it (action). Each
 // action is one `intent`; add new ones to `notificationActionSchema`.
 
-async function requireUserId(request: Request): Promise<number> {
-  const currentUserId = await getCurrentUserId(request);
-  if (!currentUserId) {
-    throw data("Select a user from the DevUI panel", { status: 401 });
-  }
-  return currentUserId;
-}
-
 // `?view=archived` lists the Archived Notifications instead of the main list.
+// Anything else falls back to the main list.
+const notificationViewSchema = z.enum(["list", "archived"]).catch("list");
+
+/** Which list the bell's dropdown shows. */
+export type NotificationView = z.infer<typeof notificationViewSchema>;
+
 export async function loader({ request }: Route.LoaderArgs) {
   const currentUserId = await requireUserId(request);
-  const view = new URL(request.url).searchParams.get("view");
+  const view = notificationViewSchema.parse(
+    new URL(request.url).searchParams.get("view")
+  );
   return {
     notifications:
       view === "archived"

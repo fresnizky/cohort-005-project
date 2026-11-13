@@ -19,7 +19,7 @@ import {
 } from "~/lib/comments";
 import { parseFormData } from "~/lib/validation";
 import { db } from "~/db";
-import { notifyCommentPosted } from "~/lib/notifications.server";
+import { insertComment } from "~/lib/comments.server";
 import {
   comments,
   courses,
@@ -154,15 +154,11 @@ function createComment(
     }
   }
 
-  return db.transaction((tx) => {
-    const comment = tx
-      .insert(comments)
-      .values({ userId, lessonId, parentId, body: trimmed })
-      .returning()
-      .get();
-    notifyCommentPosted(tx, comment.id, new Date());
-    return comment;
-  });
+  return insertComment(
+    db,
+    { userId, lessonId, parentId, body: trimmed },
+    new Date()
+  );
 }
 
 // A question sitting this long without an answer gets called out visually.

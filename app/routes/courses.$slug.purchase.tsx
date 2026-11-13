@@ -368,9 +368,13 @@ export async function action({ params, request }: Route.ActionArgs) {
     if (isUserEnrolled(currentUserId, course.id)) {
       throw redirect(`/courses/${slug}`);
     }
-    createPurchase(currentUserId, course.id, pppPrice, country);
-    const enrollment = enrollUser(currentUserId, course.id, false, false);
-    notifyEnrollmentCreated(db, enrollment.id, new Date());
+    // One transaction: the helpers write through `db`, which shares the
+    // single SQLite connection, so their writes land inside it too.
+    db.transaction((tx) => {
+      createPurchase(currentUserId, course.id, pppPrice, country);
+      const enrollment = enrollUser(currentUserId, course.id, false, false);
+      notifyEnrollmentCreated(tx, enrollment.id, new Date());
+    });
     throw redirect(`/courses/${slug}/welcome`);
   }
 

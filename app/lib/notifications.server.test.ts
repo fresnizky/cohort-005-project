@@ -14,6 +14,7 @@ import {
   archiveNotification,
   countUnseenNotifications,
   getNotificationSettings,
+  holdsNotificationRole,
   isNotificationKindEnabled,
   listArchivedNotifications,
   listNotifications,
@@ -897,6 +898,21 @@ describe("notification settings", () => {
         { kind: NotificationKindName.Refunds, enabled: true },
       ],
     });
+  });
+
+  it("knows which roles a person currently holds, so a toggle for any other role is refused", () => {
+    const membership = makeTeamAdmin(base.user.id);
+
+    expect(holdsNotificationRole(db, base.user.id, NotificationRole.Student)).toBe(true);
+    expect(holdsNotificationRole(db, base.user.id, NotificationRole.TeamAdmin)).toBe(true);
+    expect(holdsNotificationRole(db, base.user.id, NotificationRole.Instructor)).toBe(false);
+    expect(holdsNotificationRole(db, base.user.id, NotificationRole.PlatformAdmin)).toBe(false);
+
+    db.update(schema.teamMembers)
+      .set({ role: TeamMemberRole.Member })
+      .where(eq(schema.teamMembers.id, membership.id))
+      .run();
+    expect(holdsNotificationRole(db, base.user.id, NotificationRole.TeamAdmin)).toBe(false);
   });
 
   it("keeps the Notifications a person received after they lose the role", () => {

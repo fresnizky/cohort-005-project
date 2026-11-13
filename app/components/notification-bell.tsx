@@ -5,7 +5,11 @@ import { cn, formatRelativeTime } from "~/lib/utils";
 import { notificationKindLabel } from "~/lib/notification-kinds";
 import { NotificationRole, type SentenceSegment } from "~/db/schema";
 import type { loader as unseenCountLoader } from "~/routes/api.notifications.unseen-count";
-import type { loader as listLoader } from "~/routes/api.notifications";
+import type {
+  loader as listLoader,
+  NotificationView,
+} from "~/routes/api.notifications";
+import type { ListedNotification } from "~/lib/notifications.server";
 
 // The bell in the sidebar header. Its badge counts Notifications that aren't
 // Seen yet; opening it lists them and marks them Seen. Every action from the
@@ -14,13 +18,6 @@ import type { loader as listLoader } from "~/routes/api.notifications";
 const NOTIFICATIONS_PATH = "/api/notifications";
 const UNSEEN_COUNT_PATH = "/api/notifications/unseen-count";
 const POLL_INTERVAL_MS = 30_000;
-
-// The dropdown shows either the main list or the Archived Notifications.
-type NotificationView = "list" | "archived";
-
-type ListedNotification = NonNullable<
-  ReturnType<typeof useFetcher<typeof listLoader>>["data"]
->["notifications"][number];
 
 /**
  * The unseen count, polled every 30 seconds while the tab is visible. Polling
@@ -202,7 +199,7 @@ function UnseenBadge({ count }: { count: number }) {
   if (count === 0) return null;
   return (
     <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-bold leading-none text-white">
-      {count > 9 ? "9+" : count}
+      {count}
     </span>
   );
 }
@@ -313,7 +310,7 @@ function NotificationItem({
                 ROLE_COLORS[notification.role]
               )}
             >
-              {notificationKindLabel(notification)}
+              {notificationKindLabel(notification.role, notification.kind)}
             </span>
             <span className="text-[11px] text-muted-foreground">
               {formatRelativeTime(notification.createdAt)}

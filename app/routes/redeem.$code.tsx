@@ -99,23 +99,26 @@ function redeemCoupon(
     };
   }
 
-  db.update(coupons)
-    .set({
-      redeemedByUserId: userId,
-      redeemedAt: new Date().toISOString(),
-    })
-    .where(eq(coupons.id, coupon.id))
-    .run();
-
-  const enrollment = db
-    .insert(enrollments)
-    .values({ userId, courseId: coupon.courseId })
-    .returning()
-    .get();
-
   const now = new Date();
-  notifyEnrollmentCreated(db, enrollment.id, now);
-  notifySeatClaimed(db, coupon.id, now);
+  const enrollment = db.transaction((tx) => {
+    tx.update(coupons)
+      .set({
+        redeemedByUserId: userId,
+        redeemedAt: now.toISOString(),
+      })
+      .where(eq(coupons.id, coupon.id))
+      .run();
+
+    const created = tx
+      .insert(enrollments)
+      .values({ userId, courseId: coupon.courseId })
+      .returning()
+      .get();
+
+    notifyEnrollmentCreated(tx, created.id, now);
+    notifySeatClaimed(tx, coupon.id, now);
+    return created;
+  });
 
   return { ok: true, enrollment };
 }

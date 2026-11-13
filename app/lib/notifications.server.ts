@@ -28,6 +28,7 @@ import {
   TeamMemberRole,
   users,
   UserRole,
+  RefundStatus,
   type NotificationKindName,
   type SentenceSegment,
 } from "~/db/schema";
@@ -145,7 +146,7 @@ function writeNotification(
     .values({
       recipientUserId: notification.recipientUserId,
       role: notification.kind.role,
-      kind: notification.kind.kind,
+      kind: notification.kind.name,
       sentence: notification.sentence,
       excerpt: notification.excerpt,
       link: notification.link,
@@ -218,6 +219,14 @@ export function notifyRefundRequestRaised(
   }
 }
 
+// How a decided Refund Request reads in its Notification. An Open one is
+// never decided, but the map stays total so a new status can't slip through.
+const REFUND_OUTCOMES: Record<RefundStatus, string> = {
+  [RefundStatus.Approved]: "approved",
+  [RefundStatus.Declined]: "declined",
+  [RefundStatus.Open]: "still open",
+};
+
 /**
  * A Platform Admin approved or declined a Refund Request: the buyer is told
  * the outcome. Call it after the decision is stored.
@@ -245,7 +254,7 @@ export function notifyRefundRequestDecided(
   // A buyer who decided their own Refund Request isn't told about it.
   if (!decided || decided.buyerId === deciderUserId) return;
 
-  const outcome = `was ${decided.status}`;
+  const outcome = `was ${REFUND_OUTCOMES[decided.status]}`;
   const notification = isTeamLicence(db, decided.purchaseId)
     ? {
         kind: NotificationKinds.TeamAdminRefunds,
@@ -489,19 +498,22 @@ export function countUnseenNotifications(
   return row?.unseen ?? 0;
 }
 
+// What the bell shows for each Notification, in either list.
+const LISTED_FIELDS = {
+  id: notifications.id,
+  role: notifications.role,
+  kind: notifications.kind,
+  sentence: notifications.sentence,
+  excerpt: notifications.excerpt,
+  link: notifications.link,
+  createdAt: notifications.createdAt,
+  seenAt: notifications.seenAt,
+  readAt: notifications.readAt,
+};
+
 export function listNotifications(db: Queryable, userId: number) {
   return db
-    .select({
-      id: notifications.id,
-      role: notifications.role,
-      kind: notifications.kind,
-      sentence: notifications.sentence,
-      excerpt: notifications.excerpt,
-      link: notifications.link,
-      createdAt: notifications.createdAt,
-      seenAt: notifications.seenAt,
-      readAt: notifications.readAt,
-    })
+    .select(LISTED_FIELDS)
     .from(notifications)
     .where(
       and(
@@ -651,17 +663,7 @@ export function unarchiveNotification(
 /** The person's Archived Notifications, newest first. */
 export function listArchivedNotifications(db: Queryable, userId: number) {
   return db
-    .select({
-      id: notifications.id,
-      role: notifications.role,
-      kind: notifications.kind,
-      sentence: notifications.sentence,
-      excerpt: notifications.excerpt,
-      link: notifications.link,
-      createdAt: notifications.createdAt,
-      seenAt: notifications.seenAt,
-      readAt: notifications.readAt,
-    })
+    .select(LISTED_FIELDS)
     .from(notifications)
     .where(
       and(
@@ -733,6 +735,15 @@ function rolesHeld(db: Queryable, userId: number): NotificationRole[] {
   return roles;
 }
 
+/** Whether the person currently holds this role, so may change its settings. */
+export function holdsNotificationRole(
+  db: Queryable,
+  userId: number,
+  role: NotificationRole
+): boolean {
+  return rolesHeld(db, userId).includes(role);
+}
+
 export type NotificationRoleSettings = {
   role: NotificationRole;
   enabled: boolean;
@@ -752,11 +763,26 @@ export function getNotificationSettings(
     enabled: storedSetting(db, userId, role, null) !== false,
     kinds: ALL_NOTIFICATION_KINDS.filter((kind) => kind.role === role).map(
       (kind) => ({
-        kind: kind.kind,
-        enabled: storedSetting(db, userId, role, kind.kind) !== false,
+        kind: kind.name,
+        enabled: storedSetting(db, userId, role, kind.name) !== false,
       })
     ),
   }));
+}
+
+/** The row for a role toggle (kind null) or a kind toggle. */
+function settingFor(
+  userId: number,
+  role: NotificationRole,
+  kind: NotificationKindName | null
+) {
+  return and(
+    eq(notificationSettings.userId, userId),
+    eq(notificationSettings.role, role),
+    kind === null
+      ? isNull(notificationSettings.kind)
+      : eq(notificationSettings.kind, kind)
+  );
 }
 
 /** The stored choice for a role toggle (kind null) or a kind toggle. */
@@ -769,15 +795,7 @@ function storedSetting(
   return db
     .select({ enabled: notificationSettings.enabled })
     .from(notificationSettings)
-    .where(
-      and(
-        eq(notificationSettings.userId, userId),
-        eq(notificationSettings.role, role),
-        kind === null
-          ? isNull(notificationSettings.kind)
-          : eq(notificationSettings.kind, kind)
-      )
-    )
+    .where(settingFor(userId, role, kind))
     .get()?.enabled;
 }
 
@@ -799,15 +817,7 @@ function storeSetting(
 
   db.update(notificationSettings)
     .set({ enabled })
-    .where(
-      and(
-        eq(notificationSettings.userId, userId),
-        eq(notificationSettings.role, role),
-        kind === null
-          ? isNull(notificationSettings.kind)
-          : eq(notificationSettings.kind, kind)
-      )
-    )
+    .where(settingFor(userId, role, kind))
     .run();
 }
 
@@ -831,7 +841,7 @@ export function setNotificationKindEnabled(
   kind: NotificationKind,
   enabled: boolean
 ) {
-  storeSetting(db, userId, kind.role, kind.kind, enabled);
+  storeSetting(db, userId, kind.role, kind.name, enabled);
 }
 
 /**
@@ -844,7 +854,7 @@ export function isNotificationKindEnabled(
   kind: NotificationKind
 ): boolean {
   return (
-    storedSetting(db, userId, kind.role, kind.kind) !== false &&
+    storedSetting(db, userId, kind.role, kind.name) !== false &&
     storedSetting(db, userId, kind.role, null) !== false
   );
 }

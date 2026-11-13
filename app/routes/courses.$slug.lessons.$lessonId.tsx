@@ -11,7 +11,7 @@ import {
 } from "~/components/comment-thread";
 import { MIN_COMMENT_LENGTH, MAX_COMMENT_LENGTH } from "~/lib/comments";
 import { db } from "~/db";
-import { notifyCommentPosted } from "~/lib/notifications.server";
+import { insertComment } from "~/lib/comments.server";
 import {
   categories,
   comments,
@@ -428,15 +428,11 @@ function createComment(
     }
   }
 
-  return db.transaction((tx) => {
-    const comment = tx
-      .insert(comments)
-      .values({ userId, lessonId, parentId, body: trimmed })
-      .returning()
-      .get();
-    notifyCommentPosted(tx, comment.id, new Date());
-    return comment;
-  });
+  return insertComment(
+    db,
+    { userId, lessonId, parentId, body: trimmed },
+    new Date()
+  );
 }
 
 function updateComment(commentId: number, userId: number, body: string) {
