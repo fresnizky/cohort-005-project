@@ -26,7 +26,10 @@ import {
   RefundStatus,
 } from "~/db/schema";
 import { formatPrice } from "~/lib/utils";
-import { notifyRefundRequestRaised } from "~/lib/notifications.server";
+import {
+  notifyRefundRequestDecided,
+  notifyRefundRequestRaised,
+} from "~/lib/notifications.server";
 import {
   REFUND_COMPLETION_LIMIT,
   REFUND_WATCH_LIMIT_SECONDS,
@@ -695,6 +698,8 @@ export function approveRefundRequest(
       .where(eq(refunds.id, refundRequestId))
       .run();
 
+    notifyRefundRequestDecided(tx, refundRequestId, platformAdminId, now);
+
     return {
       ok: true,
       email: buildDecisionEmail(tx, purchase, RefundStatus.Approved, note),
@@ -737,6 +742,8 @@ export function declineRefundRequest(
       })
       .where(eq(refunds.id, refundRequestId))
       .run();
+
+    notifyRefundRequestDecided(tx, refundRequestId, platformAdminId, now);
 
     return {
       ok: true,

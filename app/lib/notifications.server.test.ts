@@ -5,6 +5,7 @@ import * as schema from "~/db/schema";
 import {
   NotificationKindName,
   NotificationRole,
+  RefundStatus,
   TeamMemberRole,
   UserRole,
 } from "~/db/schema";
@@ -16,6 +17,7 @@ import {
   listNotifications,
   markNotificationRead,
   markNotificationsSeen,
+  notifyRefundRequestDecided,
   notifyRefundRequestRaised,
   openNotification,
   setNotificationKindEnabled,
@@ -154,6 +156,126 @@ describe("a Refund Request is raised", () => {
       text: "Test Course",
       emphasis: true,
     });
+  });
+});
+
+function decide(
+  refundRequestId: number,
+  status: RefundStatus.Approved | RefundStatus.Declined,
+  platformAdminId: number
+) {
+  db.update(schema.refunds)
+    .set({
+      status,
+      resolvedAt: NOW.toISOString(),
+      resolvedByUserId: platformAdminId,
+    })
+    .where(eq(schema.refunds.id, refundRequestId))
+    .run();
+  notifyRefundRequestDecided(db, refundRequestId, platformAdminId, NOW);
+}
+
+describe("a Refund Request is decided", () => {
+  it("tells the buyer of an Individual Purchase it was approved, as Student · Refunds", () => {
+    const pat = addPerson("Pat", UserRole.Admin);
+    const refundRequest = raiseOn(buyForSelf(base.user.id).id);
+
+    decide(refundRequest.id, RefundStatus.Approved, pat.id);
+
+    expect(listNotifications(db, base.user.id)).toEqual([
+      expect.objectContaining({
+        role: NotificationRole.Student,
+        kind: NotificationKindName.Refunds,
+        sentence: [
+          { text: "Your Refund Request for ", emphasis: false },
+          { text: "Test Course", emphasis: true },
+          { text: " was approved", emphasis: false },
+        ],
+        excerpt: null,
+        link: "/courses/test-course",
+        createdAt: NOW.toISOString(),
+        readAt: null,
+      }),
+    ]);
+    expect(countUnseenNotifications(db, base.user.id)).toBe(1);
+  });
+
+  it("tells the buyer of an Individual Purchase it was declined", () => {
+    const pat = addPerson("Pat", UserRole.Admin);
+    const refundRequest = raiseOn(buyForSelf(base.user.id).id);
+
+    decide(refundRequest.id, RefundStatus.Declined, pat.id);
+
+    expect(listNotifications(db, base.user.id)).toEqual([
+      expect.objectContaining({
+        role: NotificationRole.Student,
+        kind: NotificationKindName.Refunds,
+        sentence: [
+          { text: "Your Refund Request for ", emphasis: false },
+          { text: "Test Course", emphasis: true },
+          { text: " was declined", emphasis: false },
+        ],
+        link: "/courses/test-course",
+      }),
+    ]);
+  });
+
+  it("tells the buyer of a Team Licence the outcome as Team Admin · Refunds, linking to the team page", () => {
+    const pat = addPerson("Pat", UserRole.Admin);
+    const priya = addPerson("Priya", UserRole.Student);
+    const approved = raiseOn(buySeats(priya.id, 3).id);
+    const declined = raiseOn(buySeats(priya.id, 2).id);
+
+    decide(approved.id, RefundStatus.Approved, pat.id);
+    decide(declined.id, RefundStatus.Declined, pat.id);
+
+    expect(listNotifications(db, priya.id)).toEqual([
+      expect.objectContaining({
+        role: NotificationRole.TeamAdmin,
+        kind: NotificationKindName.Refunds,
+        sentence: [
+          { text: "Your Refund Request for your ", emphasis: false },
+          { text: "Test Course", emphasis: true },
+          { text: " Team Licence was declined", emphasis: false },
+        ],
+        excerpt: null,
+        link: "/team",
+      }),
+      expect.objectContaining({
+        role: NotificationRole.TeamAdmin,
+        kind: NotificationKindName.Refunds,
+        sentence: [
+          { text: "Your Refund Request for your ", emphasis: false },
+          { text: "Test Course", emphasis: true },
+          { text: " Team Licence was approved", emphasis: false },
+        ],
+        link: "/team",
+      }),
+    ]);
+  });
+
+  it("doesn't tell a Platform Admin about deciding their own Refund Request", () => {
+    const pat = addPerson("Pat", UserRole.Admin);
+    const refundRequest = raiseOn(buyForSelf(pat.id).id);
+
+    decide(refundRequest.id, RefundStatus.Approved, pat.id);
+
+    expect(listNotifications(db, pat.id)).toEqual([]);
+  });
+
+  it("leaves the Platform Admins' Refunds Notifications as they were", () => {
+    const pat = addPerson("Pat", UserRole.Admin);
+    const sam = addPerson("Sam", UserRole.Admin);
+    const refundRequest = raiseOn(buyForSelf(base.user.id).id);
+    const before = [listNotifications(db, pat.id), listNotifications(db, sam.id)];
+
+    decide(refundRequest.id, RefundStatus.Declined, pat.id);
+
+    expect([
+      listNotifications(db, pat.id),
+      listNotifications(db, sam.id),
+    ]).toEqual(before);
+    expect(countUnseenNotifications(db, sam.id)).toBe(1);
   });
 });
 
