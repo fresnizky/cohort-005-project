@@ -21,6 +21,7 @@ import {
   markNotificationRead,
   markNotificationUnread,
   markNotificationsSeen,
+  notifyCommentPosted,
   notifyRefundRequestDecided,
   notifyEnrollmentCreated,
   notifyRefundRequestRaised,
@@ -275,7 +276,10 @@ describe("a Refund Request is decided", () => {
     const pat = addPerson("Pat", UserRole.Admin);
     const sam = addPerson("Sam", UserRole.Admin);
     const refundRequest = raiseOn(buyForSelf(base.user.id).id);
-    const before = [listNotifications(db, pat.id), listNotifications(db, sam.id)];
+    const before = [
+      listNotifications(db, pat.id),
+      listNotifications(db, sam.id),
+    ];
 
     decide(refundRequest.id, RefundStatus.Declined, pat.id);
 
@@ -907,5 +911,246 @@ describe("notification settings", () => {
     expect(listNotifications(db, pat.id)).toEqual([
       expect.objectContaining({ role: NotificationRole.PlatformAdmin }),
     ]);
+  });
+});
+
+describe("a comment is posted", () => {
+  let lesson: typeof schema.lessons.$inferSelect;
+
+  beforeEach(() => {
+    const courseModule = db
+      .insert(schema.modules)
+      .values({ courseId: base.course.id, title: "Basics", position: 1 })
+      .returning()
+      .get();
+    lesson = db
+      .insert(schema.lessons)
+      .values({ moduleId: courseModule.id, title: "Hooks", position: 1 })
+      .returning()
+      .get();
+  });
+
+  function enroll(userId: number) {
+    return db
+      .insert(schema.enrollments)
+      .values({ userId, courseId: base.course.id })
+      .returning()
+      .get();
+  }
+
+  function postComment(
+    userId: number,
+    body: string,
+    parentId: number | null = null,
+    at = NOW
+  ) {
+    const comment = db
+      .insert(schema.comments)
+      .values({ userId, lessonId: lesson.id, parentId, body })
+      .returning()
+      .get();
+    notifyCommentPosted(db, comment.id, at);
+    return comment;
+  }
+
+  function markAllListedSeen(userId: number) {
+    markNotificationsSeen(
+      db,
+      userId,
+      listNotifications(db, userId).map((n) => n.id),
+      NOW
+    );
+  }
+
+  describe("top-level", () => {
+    it("by a Student notifies the course's Instructor with Instructor · Comments", () => {
+      enroll(base.user.id);
+
+      const comment = postComment(base.user.id, "How does useEffect work?");
+
+      expect(listNotifications(db, base.instructor.id)).toEqual([
+        expect.objectContaining({
+          role: NotificationRole.Instructor,
+          kind: NotificationKindName.Comments,
+          sentence: [
+            { text: "Test User", emphasis: true },
+            { text: " commented on ", emphasis: false },
+            { text: "Hooks", emphasis: true },
+            { text: " (Test Course)", emphasis: false },
+          ],
+          excerpt: "How does useEffect work?",
+          link: `/courses/test-course/lessons/${lesson.id}#comment-${comment.id}`,
+          createdAt: NOW.toISOString(),
+        }),
+      ]);
+      expect(listNotifications(db, base.user.id)).toEqual([]);
+    });
+
+    it("by the course's Instructor notifies nobody", () => {
+      const pat = addPerson("Pat", UserRole.Admin);
+
+      postComment(base.instructor.id, "Welcome to the lesson!");
+
+      expect(listNotifications(db, base.instructor.id)).toEqual([]);
+      expect(listNotifications(db, pat.id)).toEqual([]);
+    });
+
+    it("by a Platform Admin notifies nobody", () => {
+      const pat = addPerson("Pat", UserRole.Admin);
+
+      postComment(pat.id, "Heads up: the video was re-recorded.");
+
+      expect(listNotifications(db, base.instructor.id)).toEqual([]);
+      expect(listNotifications(db, pat.id)).toEqual([]);
+    });
+  });
+
+  describe("excerpt", () => {
+    it("is the comment as plain text", () => {
+      enroll(base.user.id);
+
+      postComment(
+        base.user.id,
+        "## Help\n\nWhy does **`useEffect`** run *twice*? See [the docs](https://react.dev).\n\n- one\n- two"
+      );
+
+      expect(listNotifications(db, base.instructor.id)[0].excerpt).toBe(
+        "Help Why does useEffect run twice? See the docs. one two"
+      );
+    });
+
+    it("leaves out raw HTML tags", () => {
+      enroll(base.user.id);
+
+      postComment(base.user.id, "Is <b>this</b> & `a<b` right?");
+
+      expect(listNotifications(db, base.instructor.id)[0].excerpt).toBe(
+        "Is this & a<b right?"
+      );
+    });
+
+    it("is cut to about 100 characters", () => {
+      enroll(base.user.id);
+      const body = "word ".repeat(60).trim();
+
+      postComment(base.user.id, body);
+
+      const excerpt = listNotifications(db, base.instructor.id)[0].excerpt;
+      expect(excerpt).toBe(`${"word ".repeat(20).trim()}…`);
+    });
+
+    it("doesn't change when the comment is edited or deleted", () => {
+      enroll(base.user.id);
+      const comment = postComment(base.user.id, "Original question");
+
+      db.update(schema.comments)
+        .set({ body: "Edited question", editedAt: NOW.toISOString() })
+        .where(eq(schema.comments.id, comment.id))
+        .run();
+      expect(listNotifications(db, base.instructor.id)[0].excerpt).toBe(
+        "Original question"
+      );
+
+      db.update(schema.comments)
+        .set({ deletedAt: NOW.toISOString() })
+        .where(eq(schema.comments.id, comment.id))
+        .run();
+      expect(listNotifications(db, base.instructor.id)[0].excerpt).toBe(
+        "Original question"
+      );
+    });
+  });
+
+  describe("reply", () => {
+    it("never notifies the Instructor", () => {
+      enroll(base.user.id);
+      const ana = addPerson("Ana", UserRole.Student);
+      enroll(ana.id);
+      const question = postComment(base.user.id, "A question");
+      markAllListedSeen(base.instructor.id);
+
+      postComment(ana.id, "Same question here", question.id);
+
+      expect(countUnseenNotifications(db, base.instructor.id)).toBe(0);
+    });
+
+    it("by the course's Instructor notifies the question's author with Student · Comments", () => {
+      enroll(base.user.id);
+      const question = postComment(base.user.id, "A question");
+
+      postComment(base.instructor.id, "Here is the answer.", question.id);
+
+      expect(listNotifications(db, base.user.id)).toEqual([
+        expect.objectContaining({
+          role: NotificationRole.Student,
+          kind: NotificationKindName.Comments,
+          sentence: [
+            { text: "Test Instructor", emphasis: true },
+            { text: " replied to your comment on ", emphasis: false },
+            { text: "Hooks", emphasis: true },
+            { text: " (Test Course)", emphasis: false },
+          ],
+          excerpt: "Here is the answer.",
+          link: `/courses/test-course/lessons/${lesson.id}#comment-${question.id}`,
+          createdAt: NOW.toISOString(),
+        }),
+      ]);
+    });
+
+    it("by a Platform Admin notifies the question's author", () => {
+      const pat = addPerson("Pat", UserRole.Admin);
+      enroll(base.user.id);
+      const question = postComment(base.user.id, "A question");
+
+      postComment(pat.id, "Answered by the platform team.", question.id);
+
+      expect(listNotifications(db, base.user.id)).toEqual([
+        expect.objectContaining({
+          kind: NotificationKindName.Comments,
+          sentence: expect.arrayContaining([{ text: "Pat", emphasis: true }]),
+        }),
+      ]);
+    });
+
+    it("by another Student notifies nobody", () => {
+      enroll(base.user.id);
+      const ana = addPerson("Ana", UserRole.Student);
+      enroll(ana.id);
+      const question = postComment(base.user.id, "A question");
+
+      postComment(ana.id, "I think it's this.", question.id);
+
+      expect(listNotifications(db, base.user.id)).toEqual([]);
+      expect(listNotifications(db, ana.id)).toEqual([]);
+    });
+
+    it("by staff to their own comment notifies nobody", () => {
+      const pat = addPerson("Pat", UserRole.Admin);
+      enroll(base.instructor.id);
+      enroll(pat.id);
+      const instructorsNote = postComment(base.instructor.id, "A note");
+      const patsNote = postComment(pat.id, "Another note");
+
+      postComment(base.instructor.id, "A follow-up", instructorsNote.id);
+      postComment(pat.id, "A follow-up", patsNote.id);
+
+      expect(listNotifications(db, base.instructor.id)).toEqual([]);
+      expect(listNotifications(db, pat.id)).toEqual([]);
+    });
+
+    it("skips a Lapsed author, who keeps what they received before", () => {
+      const enrollment = enroll(base.user.id);
+      const question = postComment(base.user.id, "A question");
+      postComment(base.instructor.id, "First answer", question.id);
+
+      db.delete(schema.enrollments)
+        .where(eq(schema.enrollments.id, enrollment.id))
+        .run();
+      postComment(base.instructor.id, "Second answer", question.id);
+
+      expect(listNotifications(db, base.user.id).map((n) => n.excerpt)).toEqual(
+        ["First answer"]
+      );
+    });
   });
 });

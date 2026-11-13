@@ -9,12 +9,16 @@ import {
   ne,
   sql,
 } from "drizzle-orm";
+import { marked, type Token } from "marked";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "~/db/schema";
 import {
+  comments,
   coupons,
   courses,
   enrollments,
+  lessons,
+  modules,
   notifications,
   notificationSettings,
   NotificationRole,
@@ -27,6 +31,7 @@ import {
   type NotificationKindName,
   type SentenceSegment,
 } from "~/db/schema";
+import { commentAnchorId } from "~/lib/comments";
 import {
   ALL_NOTIFICATION_KINDS,
   NotificationKinds,
@@ -58,6 +63,52 @@ function bold(text: string): SentenceSegment {
 
 function plain(text: string): SentenceSegment {
   return { text, emphasis: false };
+}
+
+// ─── Excerpts ───
+
+const EXCERPT_LENGTH = 100;
+
+function plainTextOf(tokens: Token[], separator: string): string {
+  return tokens
+    .map((token): string => {
+      if (token.type === "list") {
+        return plainTextOf(token.items, " ");
+      }
+      if ("tokens" in token && token.tokens) {
+        // Block tokens hold inline tokens, which run together as one line.
+        return plainTextOf(token.tokens, "");
+      }
+      if (
+        token.type === "space" ||
+        token.type === "hr" ||
+        token.type === "br"
+      ) {
+        return " ";
+      }
+      // Raw HTML tags are markup, not words.
+      if (token.type === "html") return "";
+      return "text" in token && typeof token.text === "string"
+        ? token.text
+        : "";
+    })
+    .join(separator);
+}
+
+/**
+ * The first ~100 characters of a comment's Markdown as plain text, cut at a
+ * word boundary where there is one.
+ */
+function commentExcerpt(body: string): string {
+  const text = plainTextOf(marked.lexer(body), " ").replace(/\s+/g, " ").trim();
+  if (text.length <= EXCERPT_LENGTH) return text;
+
+  let cut = text.slice(0, EXCERPT_LENGTH);
+  const lastSpace = cut.lastIndexOf(" ");
+  if (text[EXCERPT_LENGTH] !== " " && lastSpace > 0) {
+    cut = cut.slice(0, lastSpace);
+  }
+  return `${cut.trimEnd()}…`;
 }
 
 // ─── Writing ───
@@ -318,6 +369,104 @@ export function notifySeatClaimed(db: Queryable, seatId: number, now: Date) {
       now
     );
   }
+}
+
+/**
+ * Someone posted a comment. A top-level comment from anyone but the course's
+ * Instructor or a Platform Admin gets the Instructor · Comments.
+ */
+export function notifyCommentPosted(
+  db: Queryable,
+  commentId: number,
+  now: Date
+) {
+  const posted = db
+    .select({
+      body: comments.body,
+      parentId: comments.parentId,
+      authorId: users.id,
+      authorName: users.name,
+      authorRole: users.role,
+      lessonId: lessons.id,
+      lessonTitle: lessons.title,
+      courseId: courses.id,
+      courseTitle: courses.title,
+      courseSlug: courses.slug,
+      instructorId: courses.instructorId,
+    })
+    .from(comments)
+    .innerJoin(users, eq(comments.userId, users.id))
+    .innerJoin(lessons, eq(comments.lessonId, lessons.id))
+    .innerJoin(modules, eq(lessons.moduleId, modules.id))
+    .innerJoin(courses, eq(modules.courseId, courses.id))
+    .where(eq(comments.id, commentId))
+    .get();
+
+  if (!posted) return;
+
+  const lessonPath = `/courses/${posted.courseSlug}/lessons/${posted.lessonId}`;
+  const byStaff =
+    posted.authorId === posted.instructorId ||
+    posted.authorRole === UserRole.Admin;
+
+  if (posted.parentId !== null) {
+    if (!byStaff) return;
+    const question = db
+      .select({ authorId: comments.userId })
+      .from(comments)
+      .where(eq(comments.id, posted.parentId))
+      .get();
+    if (!question || question.authorId === posted.authorId) return;
+    // A Lapsed author can't see the comments, so isn't sent to them.
+    const enrolled = db
+      .select({ id: enrollments.id })
+      .from(enrollments)
+      .where(
+        and(
+          eq(enrollments.userId, question.authorId),
+          eq(enrollments.courseId, posted.courseId)
+        )
+      )
+      .get();
+    if (!enrolled) return;
+
+    writeNotification(
+      db,
+      {
+        recipientUserId: question.authorId,
+        kind: NotificationKinds.StudentComments,
+        sentence: [
+          bold(posted.authorName),
+          plain(" replied to your comment on "),
+          bold(posted.lessonTitle),
+          plain(` (${posted.courseTitle})`),
+        ],
+        excerpt: commentExcerpt(posted.body),
+        link: `${lessonPath}#${commentAnchorId(posted.parentId)}`,
+      },
+      now
+    );
+    return;
+  }
+
+  if (byStaff) return;
+
+  writeNotification(
+    db,
+    {
+      recipientUserId: posted.instructorId,
+      kind: NotificationKinds.InstructorComments,
+      sentence: [
+        bold(posted.authorName),
+        plain(" commented on "),
+        bold(posted.lessonTitle),
+        plain(` (${posted.courseTitle})`),
+      ],
+      excerpt: commentExcerpt(posted.body),
+      link: `${lessonPath}#${commentAnchorId(commentId)}`,
+    },
+    now
+  );
 }
 
 // ─── The bell ───
