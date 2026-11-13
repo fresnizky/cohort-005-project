@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useFetcher } from "react-router";
+import { useFetcher, useLocation } from "react-router";
 import { Archive, ArchiveRestore, Bell, Mail, MailOpen } from "lucide-react";
 import { cn, formatRelativeTime } from "~/lib/utils";
 import { notificationKindLabel } from "~/lib/notification-kinds";
@@ -88,6 +88,12 @@ export function NotificationBell() {
   const markSeen = useFetcher();
   const ref = useRef<HTMLDivElement>(null);
   useClickOutside(ref, () => setOpen(false), open);
+
+  // Close once a navigation lands, e.g. after opening a Notification.
+  const location = useLocation();
+  useEffect(() => {
+    setOpen(false);
+  }, [location.key]);
 
   const notifications = list.data?.notifications;
 
@@ -184,11 +190,7 @@ export function NotificationBell() {
               </>
             )}
           </div>
-          <NotificationList
-            notifications={notifications}
-            view={view}
-            onOpen={() => setOpen(false)}
-          />
+          <NotificationList notifications={notifications} view={view} />
         </div>
       )}
     </div>
@@ -207,11 +209,9 @@ function UnseenBadge({ count }: { count: number }) {
 function NotificationList({
   notifications,
   view,
-  onOpen,
 }: {
   notifications: ListedNotification[] | undefined;
   view: NotificationView;
-  onOpen: () => void;
 }) {
   if (!notifications) {
     return (
@@ -236,7 +236,6 @@ function NotificationList({
           key={notification.id}
           notification={notification}
           view={view}
-          onOpen={onOpen}
         />
       ))}
     </ul>
@@ -257,23 +256,22 @@ const ROLE_COLORS: Record<NotificationRole, string> = {
 function NotificationItem({
   notification,
   view,
-  onOpen,
 }: {
   notification: ListedNotification;
   view: NotificationView;
-  onOpen: () => void;
 }) {
   const openFetcher = useFetcher();
   const manage = useFetcher();
   const isRead = notification.readAt !== null;
 
-  // Opening marks it Read; the action then redirects to its link.
+  // Opening marks it Read; the action then redirects to its link. The
+  // dropdown stays open until that navigation lands: React Router drops a
+  // fetcher's redirect once its component has unmounted.
   function open() {
     void openFetcher.submit(
       { intent: "open", notificationId: notification.id },
       { method: "post", action: NOTIFICATIONS_PATH }
     );
-    onOpen();
   }
 
   function act(intent: string) {
