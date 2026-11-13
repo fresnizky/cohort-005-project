@@ -434,3 +434,26 @@ export const notifications = sqliteTable(
     ),
   ]
 );
+
+// Only the choices people actually make. A missing row means on, so every
+// Notification Kind starts on (including ones added later) and settings come
+// back when a role is regained. A null kind is the role's own toggle.
+export const notificationSettings = sqliteTable(
+  "notification_settings",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id),
+    role: text("role").notNull().$type<NotificationRole>(),
+    kind: text("kind").$type<NotificationKindName>(),
+    enabled: integer("enabled", { mode: "boolean" }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("notification_settings_user_role_kind_idx").on(
+      table.userId,
+      table.role,
+      table.kind
+    ),
+  ]
+);

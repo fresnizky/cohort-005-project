@@ -10,18 +10,51 @@ import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { Textarea } from "~/components/ui/textarea";
-import { UserRole, RefundStatus, users } from "~/db/schema";
+import {
+  NotificationKindName,
+  NotificationRole,
+  UserRole,
+  RefundStatus,
+  users,
+} from "~/db/schema";
 import { AlertTriangle } from "lucide-react";
 import { data, isRouteErrorResponse, Link } from "react-router";
 import { db } from "~/db";
 import { eq } from "drizzle-orm";
 import { formatPrice } from "~/lib/utils";
 import { listRefundRequestsForBuyer } from "~/lib/refunds.server";
+import {
+  getNotificationSettings,
+  setNotificationKindEnabled,
+  setNotificationRoleEnabled,
+  type NotificationRoleSettings,
+} from "~/lib/notifications.server";
+import {
+  ALL_NOTIFICATION_KINDS,
+  KIND_LABELS,
+  ROLE_LABELS,
+} from "~/lib/notification-kinds";
 
-const settingsSchema = z.object({
-  name: z.string().trim().min(1, "Name cannot be empty."),
-  bio: z.string().trim().optional(),
-});
+const enabledSchema = z.enum(["true", "false"]).transform((v) => v === "true");
+
+const settingsSchema = z.discriminatedUnion("intent", [
+  z.object({
+    intent: z.literal("update-profile"),
+    name: z.string().trim().min(1, "Name cannot be empty."),
+    bio: z.string().trim().optional(),
+  }),
+  z.object({
+    intent: z.literal("set-notification-role"),
+    role: z.nativeEnum(NotificationRole),
+    enabled: enabledSchema,
+  }),
+  z.object({
+    intent: z.literal("set-notification-kind"),
+    role: z.nativeEnum(NotificationRole),
+    kind: z.nativeEnum(NotificationKindName),
+    enabled: enabledSchema,
+  }),
+]);
 
 export function meta() {
   return [
@@ -50,6 +83,7 @@ export async function loader({ request }: Route.LoaderArgs) {
   }
 
   const refundRequests = listRefundRequestsForBuyer(db, currentUserId);
+  const notificationSettings = getNotificationSettings(db, currentUserId);
 
   return {
     user: {
@@ -60,6 +94,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       role: currentUser.role,
     },
     refundRequests,
+    notificationSettings,
   };
 }
 
@@ -86,6 +121,31 @@ export async function action({ request }: Route.ActionArgs) {
     return data({ errors: parsed.errors }, { status: 400 });
   }
 
+  switch (parsed.data.intent) {
+    case "set-notification-role": {
+      setNotificationRoleEnabled(
+        db,
+        currentUser.id,
+        parsed.data.role,
+        parsed.data.enabled
+      );
+      return { notificationSettingsSaved: true };
+    }
+    case "set-notification-kind": {
+      const { role, kind, enabled } = parsed.data;
+      const notificationKind = ALL_NOTIFICATION_KINDS.find(
+        (candidate) => candidate.role === role && candidate.kind === kind
+      );
+      if (!notificationKind) {
+        throw data("Unknown Notification Kind.", { status: 400 });
+      }
+      setNotificationKindEnabled(db, currentUser.id, notificationKind, enabled);
+      return { notificationSettingsSaved: true };
+    }
+    case "update-profile":
+      break;
+  }
+
   const { name, bio } = parsed.data;
 
   db
@@ -98,7 +158,7 @@ export async function action({ request }: Route.ActionArgs) {
 }
 
 export default function Settings({ loaderData }: Route.ComponentProps) {
-  const { user, refundRequests } = loaderData;
+  const { user, refundRequests, notificationSettings } = loaderData;
   const openCount = refundRequests.filter(
     (refundRequest) => refundRequest.status === RefundStatus.Open
   ).length;
@@ -139,6 +199,7 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
         </CardHeader>
         <CardContent>
           <fetcher.Form method="post" className="space-y-4">
+            <input type="hidden" name="intent" value="update-profile" />
             <div className="space-y-2">
               <Label htmlFor="name">Name</Label>
               <Input
@@ -188,6 +249,8 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
         </CardContent>
       </Card>
 
+      <NotificationSettingsCard settings={notificationSettings} />
+
       {refundRequests.length > 0 && (
         <Card className="mt-8 max-w-md">
           <CardHeader>
@@ -235,6 +298,102 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
           </CardContent>
         </Card>
       )}
+    </div>
+  );
+}
+
+function NotificationSettingsCard({
+  settings,
+}: {
+  settings: NotificationRoleSettings[];
+}) {
+  return (
+    <Card className="mt-8 max-w-md">
+      <CardHeader>
+        <h2 className="text-lg font-semibold">Notifications</h2>
+        <p className="text-sm text-muted-foreground">
+          Choose which Notifications you get for each of your roles. Changes
+          apply to new Notifications only.
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {settings.map((roleSettings) => (
+          <div key={roleSettings.role} className="rounded-md border p-3">
+            <NotificationToggle
+              label={ROLE_LABELS[roleSettings.role]}
+              enabled={roleSettings.enabled}
+              fields={{
+                intent: "set-notification-role",
+                role: roleSettings.role,
+              }}
+              className="font-medium"
+            />
+            {roleSettings.enabled && (
+              <div className="mt-3 space-y-2 border-l pl-4">
+                {roleSettings.kinds.map((kindSettings) => (
+                  <NotificationToggle
+                    key={kindSettings.kind}
+                    label={KIND_LABELS[kindSettings.kind]}
+                    enabled={kindSettings.enabled}
+                    fields={{
+                      intent: "set-notification-kind",
+                      role: roleSettings.role,
+                      kind: kindSettings.kind,
+                    }}
+                    className="text-sm"
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+function NotificationToggle({
+  label,
+  enabled,
+  fields,
+  className,
+}: {
+  label: string;
+  enabled: boolean;
+  fields: Record<string, string>;
+  className?: string;
+}) {
+  const fetcher = useFetcher();
+  // Show the new state straight away while the change is saved.
+  const pending = fetcher.formData?.get("enabled");
+  const isOn = pending === undefined || pending === null
+    ? enabled
+    : pending === "true";
+
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className={className}>{label}</span>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={isOn}
+        aria-label={`${label} Notifications`}
+        onClick={() =>
+          fetcher.submit(
+            { ...fields, enabled: String(!isOn) },
+            { method: "post" }
+          )
+        }
+        className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
+          isOn ? "bg-primary" : "bg-muted-foreground/30"
+        }`}
+      >
+        <span
+          className={`inline-block size-4 rounded-full bg-background shadow transition-transform ${
+            isOn ? "translate-x-4" : "translate-x-0.5"
+          }`}
+        />
+      </button>
     </div>
   );
 }
