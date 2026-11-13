@@ -5,9 +5,15 @@ import { getCurrentUserId } from "~/lib/session";
 import { db } from "~/db";
 import { parseFormData } from "~/lib/validation";
 import {
+  archiveNotification,
+  listArchivedNotifications,
   listNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
+  markNotificationUnread,
   markNotificationsSeen,
   openNotification,
+  unarchiveNotification,
 } from "~/lib/notifications.server";
 
 // The bell's list (loader) and every action taken from it (action). Each
@@ -21,9 +27,16 @@ async function requireUserId(request: Request): Promise<number> {
   return currentUserId;
 }
 
+// `?view=archived` lists the Archived Notifications instead of the main list.
 export async function loader({ request }: Route.LoaderArgs) {
   const currentUserId = await requireUserId(request);
-  return { notifications: listNotifications(db, currentUserId) };
+  const view = new URL(request.url).searchParams.get("view");
+  return {
+    notifications:
+      view === "archived"
+        ? listArchivedNotifications(db, currentUserId)
+        : listNotifications(db, currentUserId),
+  };
 }
 
 const notificationIdSchema = z.coerce.number().int().positive();
@@ -41,7 +54,29 @@ const notificationActionSchema = z.discriminatedUnion("intent", [
     intent: z.literal("open"),
     notificationId: notificationIdSchema,
   }),
+  z.object({
+    intent: z.literal("mark-read"),
+    notificationId: notificationIdSchema,
+  }),
+  z.object({
+    intent: z.literal("mark-unread"),
+    notificationId: notificationIdSchema,
+  }),
+  z.object({ intent: z.literal("mark-all-read") }),
+  z.object({
+    intent: z.literal("archive"),
+    notificationId: notificationIdSchema,
+  }),
+  z.object({
+    intent: z.literal("unarchive"),
+    notificationId: notificationIdSchema,
+  }),
 ]);
+
+function requireFound(found: boolean) {
+  if (!found) throw data("Notification not found", { status: 404 });
+  return { ok: true };
+}
 
 export async function action({ request }: Route.ActionArgs) {
   const currentUserId = await requireUserId(request);
@@ -76,5 +111,25 @@ export async function action({ request }: Route.ActionArgs) {
       if (!link) throw data("Notification not found", { status: 404 });
       return redirect(link);
     }
+    case "mark-read":
+      return requireFound(
+        markNotificationRead(db, currentUserId, parsed.data.notificationId, now)
+      );
+    case "mark-unread":
+      return requireFound(
+        markNotificationUnread(db, currentUserId, parsed.data.notificationId)
+      );
+    case "mark-all-read": {
+      markAllNotificationsRead(db, currentUserId, now);
+      return { ok: true };
+    }
+    case "archive":
+      return requireFound(
+        archiveNotification(db, currentUserId, parsed.data.notificationId, now)
+      );
+    case "unarchive":
+      return requireFound(
+        unarchiveNotification(db, currentUserId, parsed.data.notificationId)
+      );
   }
 }
