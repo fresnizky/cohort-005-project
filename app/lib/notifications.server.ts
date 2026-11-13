@@ -4,9 +4,12 @@ import * as schema from "~/db/schema";
 import {
   coupons,
   courses,
+  enrollments,
   notifications,
   purchases,
   refunds,
+  teamMembers,
+  TeamMemberRole,
   users,
   UserRole,
   type SentenceSegment,
@@ -134,6 +137,104 @@ export function notifyRefundRequestRaised(
         sentence,
         excerpt: null,
         link: "/admin/refunds",
+      },
+      now
+    );
+  }
+}
+
+/**
+ * A Student got an Enrollment (Individual Purchase or Claimed Seat): the
+ * course's Instructor gets Instructor · Enrollments, unless they are the one
+ * enrolling.
+ */
+export function notifyEnrollmentCreated(
+  db: Queryable,
+  enrollmentId: number,
+  now: Date
+) {
+  const enrolled = db
+    .select({
+      studentId: users.id,
+      studentName: users.name,
+      courseId: courses.id,
+      courseTitle: courses.title,
+      instructorId: courses.instructorId,
+    })
+    .from(enrollments)
+    .innerJoin(users, eq(enrollments.userId, users.id))
+    .innerJoin(courses, eq(enrollments.courseId, courses.id))
+    .where(eq(enrollments.id, enrollmentId))
+    .get();
+
+  if (!enrolled) return;
+  if (enrolled.instructorId === enrolled.studentId) return;
+
+  writeNotification(
+    db,
+    {
+      recipientUserId: enrolled.instructorId,
+      kind: NotificationKinds.InstructorEnrollments,
+      sentence: [
+        bold(enrolled.studentName),
+        plain(" enrolled in "),
+        bold(enrolled.courseTitle),
+      ],
+      excerpt: null,
+      link: `/instructor/${enrolled.courseId}/students`,
+    },
+    now
+  );
+}
+
+/**
+ * A Student claimed a Seat on a Team Licence: the Team Admin(s) of the team
+ * that owns it get Team Admin · Seats, except the one claiming.
+ */
+export function notifySeatClaimed(db: Queryable, seatId: number, now: Date) {
+  const claimed = db
+    .select({
+      teamId: coupons.teamId,
+      claimerId: users.id,
+      claimerName: users.name,
+      courseTitle: courses.title,
+    })
+    .from(coupons)
+    .innerJoin(users, eq(coupons.redeemedByUserId, users.id))
+    .innerJoin(courses, eq(coupons.courseId, courses.id))
+    .where(eq(coupons.id, seatId))
+    .get();
+
+  if (!claimed) return;
+
+  const teamAdmins = db
+    .select({ id: teamMembers.userId })
+    .from(teamMembers)
+    .where(
+      and(
+        eq(teamMembers.teamId, claimed.teamId),
+        eq(teamMembers.role, TeamMemberRole.Admin),
+        ne(teamMembers.userId, claimed.claimerId)
+      )
+    )
+    .all();
+
+  const sentence = [
+    bold(claimed.claimerName),
+    plain(" claimed a Seat on your "),
+    bold(claimed.courseTitle),
+    plain(" Team Licence"),
+  ];
+
+  for (const teamAdmin of teamAdmins) {
+    writeNotification(
+      db,
+      {
+        recipientUserId: teamAdmin.id,
+        kind: NotificationKinds.TeamAdminSeats,
+        sentence,
+        excerpt: null,
+        link: "/team",
       },
       now
     );
