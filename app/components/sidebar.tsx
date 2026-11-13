@@ -143,6 +143,8 @@ export function Sidebar({
       </div>
 
       <nav className="flex-1 space-y-1 p-3">
+        {/* PROTOTYPE slot: notifications.prototype.tsx variant B portals here */}
+        <div id="prototype-nav-slot" />
         {navItems
           .filter((item) => isVisible(item, currentUserRole))
           .map((item) => (
