@@ -140,6 +140,61 @@ export function notifyRefundRequestRaised(
   }
 }
 
+/**
+ * A Platform Admin approved or declined a Refund Request: the buyer is told
+ * the outcome. Call it after the decision is stored.
+ */
+export function notifyRefundRequestDecided(
+  db: Queryable,
+  refundRequestId: number,
+  deciderUserId: number,
+  now: Date
+) {
+  const decided = db
+    .select({
+      status: refunds.status,
+      purchaseId: purchases.id,
+      buyerId: purchases.userId,
+      courseTitle: courses.title,
+      courseSlug: courses.slug,
+    })
+    .from(refunds)
+    .innerJoin(purchases, eq(refunds.purchaseId, purchases.id))
+    .innerJoin(courses, eq(purchases.courseId, courses.id))
+    .where(eq(refunds.id, refundRequestId))
+    .get();
+
+  // A buyer who decided their own Refund Request isn't told about it.
+  if (!decided || decided.buyerId === deciderUserId) return;
+
+  const outcome = `was ${decided.status}`;
+  const notification = isTeamLicence(db, decided.purchaseId)
+    ? {
+        kind: NotificationKinds.TeamAdminRefunds,
+        sentence: [
+          plain("Your Refund Request for your "),
+          bold(decided.courseTitle),
+          plain(` Team Licence ${outcome}`),
+        ],
+        link: "/team",
+      }
+    : {
+        kind: NotificationKinds.StudentRefunds,
+        sentence: [
+          plain("Your Refund Request for "),
+          bold(decided.courseTitle),
+          plain(` ${outcome}`),
+        ],
+        link: `/courses/${decided.courseSlug}`,
+      };
+
+  writeNotification(
+    db,
+    { recipientUserId: decided.buyerId, excerpt: null, ...notification },
+    now
+  );
+}
+
 // ─── The bell ───
 
 export function countUnseenNotifications(

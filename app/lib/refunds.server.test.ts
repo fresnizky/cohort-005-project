@@ -5,6 +5,7 @@ import * as schema from "~/db/schema";
 import {
   LessonProgressStatus,
   NotificationKindName,
+  NotificationRole,
   RefundStatus,
   UserRole,
 } from "~/db/schema";
@@ -394,6 +395,60 @@ describe("approving a Refund Request", () => {
     expect(result.email.to).toBe("test@example.com");
     expect(result.email.subject).toBe("Refund approved — Test Course");
     expect(result.email.body).toContain("$79.00");
+  });
+});
+
+describe("notifying the buyer of the decision", () => {
+  it("tells the buyer of an Individual Purchase it was approved", () => {
+    const purchase = buyForSelf(base.user.id);
+    const id = raise(purchase.id, base.user.id);
+
+    approveRefundRequest(db, id, platformAdmin.id, null, NOW);
+
+    expect(listNotifications(db, base.user.id)).toEqual([
+      expect.objectContaining({
+        role: NotificationRole.Student,
+        kind: NotificationKindName.Refunds,
+        link: "/courses/test-course",
+      }),
+    ]);
+  });
+
+  it("tells the buyer of a Team Licence it was declined", () => {
+    const priya = addLearner("Priya");
+    const { purchase } = buySeats(priya.id, 2);
+    const id = raise(purchase.id, priya.id);
+
+    declineRefundRequest(db, id, platformAdmin.id, "Seats are in use.", NOW);
+
+    expect(listNotifications(db, priya.id)).toEqual([
+      expect.objectContaining({
+        role: NotificationRole.TeamAdmin,
+        kind: NotificationKindName.Refunds,
+        link: "/team",
+      }),
+    ]);
+  });
+
+  it("tells nobody when the decision is refused", () => {
+    const priya = addLearner("Priya");
+    const { purchase, seats } = buySeats(priya.id, 2);
+    const id = raise(purchase.id, priya.id);
+    claimSeat(seats[0].id, base.user.id);
+
+    approveRefundRequest(db, id, platformAdmin.id, null, NOW);
+
+    expect(listNotifications(db, priya.id)).toEqual([]);
+  });
+
+  it("leaves the Platform Admin's Refunds Notification as it was", () => {
+    const purchase = buyForSelf(base.user.id);
+    const id = raise(purchase.id, base.user.id);
+    const before = listNotifications(db, platformAdmin.id);
+
+    approveRefundRequest(db, id, platformAdmin.id, null, NOW);
+
+    expect(listNotifications(db, platformAdmin.id)).toEqual(before);
   });
 });
 
